@@ -12,6 +12,7 @@ from tkinter import filedialog, messagebox
 import cv2
 import numpy as np
 import pytesseract
+import copy
 
 # Configure Tesseract to use the local "tesseract" folder
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -195,14 +196,18 @@ def displayImagesInShapeDifference(inputImage, shape1CoordsList, boxList):
 
 
 # ===================== OCR Matching =====================
-def matchTextToGroups(pil_image, group_polygons, threshold=50):
+def matchTextToGroups(pil_image, group_polygons, box_groups, threshold=50):
     """
-    For each group polygon, find the closest merged OCR text (if within threshold)
-    and draw a single line+label. Returns dict { group_index: text_or_None }.
+    For each group polygon, starting from the most bottom-right, find the closest merged OCR text
+    (within 1.5x box size). Prioritize ungrouped text directly above, then directly below.
+    Returns dict { group_index: text_or_None }.
     """
-    # 1) run tesseract
     gray = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2GRAY)
-    data = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT)
+    data = pytesseract.image_to_data(
+        gray, 
+        output_type=pytesseract.Output.DICT, 
+        config="--psm 11"
+    )
 
     # 2) collect all OCR text boxes outside of any group
     raw_boxes = []
@@ -228,7 +233,6 @@ def matchTextToGroups(pil_image, group_polygons, threshold=50):
 
     # 3) Merge overlapping text boxes
     def boxes_overlap(a, b, pad=2):
-        # Returns True if a and b overlap (with optional padding)
         ax1, ay1, ax2, ay2 = a['x']-pad, a['y']-pad, a['x']+a['w']+pad, a['y']+a['h']+pad
         bx1, by1, bx2, by2 = b['x']-pad, b['y']-pad, b['x']+b['w']+pad, b['y']+b['h']+pad
         return not (ax2 < bx1 or ax1 > bx2 or ay2 < by1 or ay1 > by2)
@@ -245,7 +249,6 @@ def matchTextToGroups(pil_image, group_polygons, threshold=50):
             if boxes_overlap(box, raw_boxes[j]):
                 group.append(j)
                 used.add(j)
-        # Merge group into one box
         xs = [raw_boxes[k]['x'] for k in group]
         ys = [raw_boxes[k]['y'] for k in group]
         ws = [raw_boxes[k]['x'] + raw_boxes[k]['w'] for k in group]
@@ -260,53 +263,111 @@ def matchTextToGroups(pil_image, group_polygons, threshold=50):
             'w': max_x - min_x,
             'h': max_y - min_y,
             'cx': (min_x + max_x) / 2,
-            'cy': (min_y + max_y) / 2
+            'cy': (min_y + max_y) / 2,
+            'bottom': max_y,
+            'top': min_y
         })
         used.update(group)
 
-    # 4) For each group, pick the closest merged text (within threshold), each text only once
-    candidates = []
-    for idx, m in enumerate(merged):
-        for gi, poly in enumerate(group_polygons):
-            minX, minY = poly[0]
-            maxX, maxY = poly[2]
+    # --- Sort groups by bottom then right (most bottom-right first) ---
+    group_indices = list(range(len(group_polygons)))
+    group_bboxes = []
+    for poly in group_polygons:
+        xs = [p[0] for p in poly]
+        ys = [p[1] for p in poly]
+        minX, maxX = min(xs), max(xs)
+        minY, maxY = min(ys), max(ys)
+        group_bboxes.append((minX, minY, maxX, maxY))
+    # Sort by maxY (bottom), then maxX (right), descending
+    group_indices.sort(key=lambda i: (group_bboxes[i][3], group_bboxes[i][2]), reverse=True)
+
+    mapping = {gi: None for gi in range(len(group_polygons))}
+    assigned_texts = set()
+    draw = ImageDraw.Draw(pil_image)
+
+    for gi in group_indices:
+        poly = group_polygons[gi]
+        minX, minY, maxX, maxY = group_bboxes[gi]
+        group_height = maxY - minY
+
+        # Get max box size in this group
+        if box_groups and gi < len(box_groups):
+            max_box_size = max(b[2] for b in box_groups[gi]) if box_groups[gi] else 0
+        else:
+            max_box_size = 0
+        max_distance = 1.5 * max_box_size if max_box_size > 0 else threshold
+
+        # 1. Find ungrouped text directly above (within horizontal bounds, above group)
+        above_candidates = []
+        for idx, m in enumerate(merged):
+            if idx in assigned_texts:
+                continue
+            # Text must be above the group and horizontally overlap
+            if m['bottom'] <= minY and minX <= m['cx'] <= maxX and m['h'] <= group_height:
+                dy = minY - m['bottom']
+                dx = abs(m['cx'] - (minX + maxX) / 2)
+                dist = math.hypot(dx, dy)
+                if dist <= max_distance:
+                    above_candidates.append((dist, idx, m))
+        above_candidates.sort()
+        if above_candidates:
+            _, idx, m = above_candidates[0]
+            mapping[gi] = m['text']
+            assigned_texts.add(idx)
+            draw.polygon(poly, outline="pink", width=3)
+            gx = sum(p[0] for p in poly)/4
+            gy = sum(p[1] for p in poly)/4
+            draw.line([(m['cx'], m['cy']), (gx, gy)], fill="blue", width=1)
+            draw.text((m['cx'], m['cy']), m['text'], fill="green")
+            continue  # Prioritized, skip fallback
+
+        # 2. If none, find ungrouped text directly below (within horizontal bounds, below group)
+        below_candidates = []
+        for idx, m in enumerate(merged):
+            if idx in assigned_texts:
+                continue
+            # Text must be below the group and horizontally overlap
+            if m['top'] >= maxY and minX <= m['cx'] <= maxX and m['h'] <= group_height:
+                dy = m['top'] - maxY
+                dx = abs(m['cx'] - (minX + maxX) / 2)
+                dist = math.hypot(dx, dy)
+                if dist <= max_distance:
+                    below_candidates.append((dist, idx, m))
+        below_candidates.sort()
+        if below_candidates:
+            _, idx, m = below_candidates[0]
+            mapping[gi] = m['text']
+            assigned_texts.add(idx)
+            draw.polygon(poly, outline="orange", width=3)
+            gx = sum(p[0] for p in poly)/4
+            gy = sum(p[1] for p in poly)/4
+            draw.line([(m['cx'], m['cy']), (gx, gy)], fill="purple", width=1)
+            draw.text((m['cx'], m['cy']), m['text'], fill="green")
+            continue
+
+        # 3. Fallback: closest text (original logic)
+        fallback_candidates = []
+        for idx, m in enumerate(merged):
+            if idx in assigned_texts:
+                continue
+            if m['h'] > group_height:
+                continue
             cx, cy = m['cx'], m['cy']
             dx = max(minX - cx, 0, cx - maxX)
             dy = max(minY - cy, 0, cy - maxY)
             dist = math.hypot(dx, dy)
-            if dist <= threshold:
-                candidates.append({
-                    'text': m['text'],
-                    'cx': cx,
-                    'cy': cy,
-                    'group': gi,
-                    'dist': dist,
-                    'merged_idx': idx
-                })
-
-    best_for_group = {}
-    used_merged_indices = set()
-    sorted_candidates = sorted(candidates, key=lambda c: c['dist'])
-    for c in sorted_candidates:
-        gi = c['group']
-        idx = c['merged_idx']
-        if idx not in used_merged_indices and gi not in best_for_group:
-            best_for_group[gi] = c
-            used_merged_indices.add(idx)
-
-    # 5) draw and build mapping
-    mapping = {gi: None for gi in range(len(group_polygons))}
-    draw = ImageDraw.Draw(pil_image)
-    for gi, c in best_for_group.items():
-        mapping[gi] = c['text']
-        poly = group_polygons[gi]
-        # Highlight the group polygon in pink
-        draw.polygon(poly, outline="pink", width=3)
-        # draw a line + label
-        gx = sum(p[0] for p in poly)/4
-        gy = sum(p[1] for p in poly)/4
-        draw.line([(c['cx'], c['cy']), (gx, gy)], fill="blue", width=1)
-        draw.text((c['cx'], c['cy']), c['text'], fill="green")
+            if dist <= max_distance:
+                fallback_candidates.append((dist, idx, m))
+        fallback_candidates.sort()
+        if fallback_candidates:
+            _, idx, m = fallback_candidates[0]
+            mapping[gi] = m['text']
+            assigned_texts.add(idx)
+            draw.polygon(poly, outline="gray", width=3)
+            gx = sum(p[0] for p in poly)/4
+            gy = sum(p[1] for p in poly)/4
+            draw.line([(m['cx'], m['cy']), (gx, gy)], fill="gray", width=1)
+            draw.text((m['cx'], m['cy']), m['text'], fill="green")
 
     return mapping
 
@@ -323,7 +384,7 @@ def openAndConvertToColor():
 def Processing(image):
     img1, valids = processImage(image)
     img2, groups, polys, _ = connectNearbyBoxes(img1, valids)
-    mapping = matchTextToGroups(img2, polys, threshold=50)
+    mapping = matchTextToGroups(img2, polys, groups, threshold=50)  # <-- pass groups as box_groups
     print("Text → Group assignments:", mapping)
     draw = ImageDraw.Draw(img2)
     for grp in groups:
@@ -333,7 +394,6 @@ def Processing(image):
 
 current_box_groups = None
 current_text_mapping = None
-labels_file_path = None
 image_label = None
 
 def open_and_process_image():
@@ -375,72 +435,190 @@ def show_text_mapping():
         msg += f"Group {gi+1}: {texts}\n"
     messagebox.showinfo("Text → Groups", msg)
 
-def select_labels_file():
-    global labels_file_path
-    path = filedialog.askopenfilename(
-        title="Select Labels File",
-        filetypes=[("Text Files", "*.txt")]
-    )
-    if path:
-        labels_file_path = path
-        messagebox.showinfo("Labels File", f"Selected:\n{path}")
-    else:
-        messagebox.showerror("Error", "No labels file selected.")
-
-def label_selection_dialog(group_index, available_labels):
-    dlg = tk.Toplevel(); dlg.title(f"Assign Label for Group {group_index+1}")
-    tk.Label(dlg, text=f"Select label for Group {group_index+1}:").pack(pady=10)
-    var = tk.StringVar(dlg); var.set(available_labels[0])
-    tk.OptionMenu(dlg, var, *available_labels).pack(pady=5)
-    def on_ok():
-        dlg.result = var.get(); dlg.destroy()
-    tk.Button(dlg, text="OK", command=on_ok).pack(pady=10)
-    dlg.grab_set(); dlg.wait_window()
-    return getattr(dlg, "result", None)
-
-def assign_labels():
-    global current_box_groups, labels_file_path
+def show_cropped_ocr_images():
+    global current_box_groups
     if not current_box_groups:
-        messagebox.showinfo("Assign Labels", "No box groups processed.")
+        messagebox.showinfo("Cropped OCR", "No image processed yet.")
         return
-    if not labels_file_path:
-        messagebox.showerror("Error", "Select labels file first.")
-        return
-    try:
-        with open(labels_file_path) as f:
-            labels = [l.strip() for l in f if l.strip()]
-        if not labels:
-            messagebox.showerror("Error", "No labels in file.")
-            return
-    except Exception as e:
-        messagebox.showerror("Error", f"Failed to read labels file: {e}")
-        return
-
-    img, _, polys = current_box_groups
-    draw = ImageDraw.Draw(img)
-    for poly in polys:
-        draw.polygon(poly, outline="yellow", width=3)
-    group_labels = {}
-    for i, poly in enumerate(polys):
-        lab = label_selection_dialog(i, labels) or ""
-        group_labels[i] = lab
-        draw.text((poly[0][0], max(0, poly[0][1] - 15)), lab, fill="blue")
-    photo = ImageTk.PhotoImage(img)
-    image_label.config(image=photo); image_label.image = photo
-
-    detail = "Assigned Labels:\n\n" + "\n".join(f"Group {i+1}: {lab}" for i,lab in group_labels.items())
-    messagebox.showinfo("Assigned Labels", detail)
+    img, groups, polys = current_box_groups
+    crops = ocr_group_crops(img, polys, expand_factor=1.3)
+    for idx, entry in enumerate(crops):
+        crop_img = entry['crop']
+        ocr_results = entry['ocr']
+        win = tk.Toplevel()
+        win.title(f"Group {idx+1} Cropped OCR")
+        photo = ImageTk.PhotoImage(crop_img)
+        lbl = tk.Label(win, image=photo)
+        lbl.image = photo
+        lbl.pack()
+        # Show OCR results as text
+        text = ""
+        for o in ocr_results:
+            text += f"Text: {o['text']}\nBBoxes: {o['all_bboxes']}\n\n"
+        tk.Label(win, text=text, justify="left", anchor="w").pack()
+        tk.Button(win, text="Next", command=win.destroy).pack(pady=10)
+        win.grab_set()
+        win.wait_window()
 
 def create_gui():
     root = tk.Tk(); root.title("Shipyard OCR Matcher")
     tk.Button(root, text="Load & Process Image", command=open_and_process_image).pack(pady=5)
-    tk.Button(root, text="Display Box Groups",   command=show_box_groups).pack(pady=5)
     tk.Button(root, text="Show Text→Group Map",  command=show_text_mapping).pack(pady=5)
-    tk.Button(root, text="Select Labels File",   command=select_labels_file).pack(pady=5)
-    tk.Button(root, text="Assign Labels",        command=assign_labels).pack(pady=5)
+    tk.Button(root, text="Show Cropped OCR Images", command=show_cropped_ocr_images).pack(pady=5)
+
     global image_label
     image_label = tk.Label(root); image_label.pack()
     root.mainloop()
 
 if __name__ == "__main__":
     create_gui()
+
+def get_group_surrounding_images(pil_image, group_polygons, box_groups, box_length_factor=1.5):
+    """
+    For each group, returns a masked PIL image where:
+      - The group itself is masked out (black).
+      - Only the area within (box_length_factor * box size) from the edge of each box in the group is visible.
+      - All other areas are masked out (black).
+    Returns: list of PIL.Image objects, one per group.
+    """
+    images = []
+    img_w, img_h = pil_image.size
+
+    for group_idx, poly in enumerate(group_polygons):
+        group_boxes = box_groups[group_idx]
+        # Create mask: black everywhere
+        mask = Image.new("L", (img_w, img_h), 0)
+        draw = ImageDraw.Draw(mask)
+        # For each box in the group, draw an expanded rectangle in white
+        for (x, y, s) in group_boxes:
+            pad = int(box_length_factor * s)
+            exp_minX = max(0, x - pad)
+            exp_maxX = min(img_w, x + s + pad)
+            exp_minY = max(0, y - pad)
+            exp_maxY = min(img_h, y + s + pad)
+            draw.rectangle([exp_minX, exp_minY, exp_maxX, exp_maxY], fill=255)
+        # Draw group polygon black (mask out group itself)
+        draw.polygon(poly, fill=0)
+
+        # Apply mask to image
+        masked = pil_image.copy()
+        masked_np = np.array(masked)
+        mask_np = np.array(mask)
+        masked_np[mask_np == 0] = 0
+        masked_img = Image.fromarray(masked_np)
+
+        images.append(masked_img)
+
+    return images
+
+def show_group_masks(pil_image, group_polygons, box_groups, box_length_factor=1.5):
+    """
+    Display the mask for each group one by one in a Tkinter window.
+    """
+    images = get_group_surrounding_images(pil_image, group_polygons, box_groups, box_length_factor)
+    for idx, img in enumerate(images):
+        win = tk.Toplevel()
+        win.title(f"Group {idx+1} Mask")
+        photo = ImageTk.PhotoImage(img)
+        lbl = tk.Label(win, image=photo)
+        lbl.image = photo
+        lbl.pack()
+        tk.Label(win, text=f"Group {idx+1}").pack()
+        tk.Button(win, text="Next", command=win.destroy).pack(pady=10)
+        win.grab_set()
+        win.wait_window()
+
+def ocr_group_crops(pil_image, group_polygons, expand_factor=1.3):
+    """
+    For each group:
+      - Crop to 1.3x group bounding box.
+      - Mask all group polygons to white.
+      - Run OCR, save text and true location (original image coordinates).
+      - Merge overlapping texts, keep all possible bounding boxes.
+    Returns: List of dicts, one per group:
+      { 'crop': PIL.Image, 'ocr': [ { 'text', 'orig_bbox', 'all_bboxes' } ] }
+    """
+    results = []
+    img_w, img_h = pil_image.size
+
+    # Precompute all group bounding boxes
+    group_bboxes = []
+    for poly in group_polygons:
+        xs = [p[0] for p in poly]
+        ys = [p[1] for p in poly]
+        minX, maxX = min(xs), max(xs)
+        minY, maxY = min(ys), max(ys)
+        group_bboxes.append((minX, minY, maxX, maxY))
+
+    for idx, (poly, bbox) in enumerate(zip(group_polygons, group_bboxes)):
+        minX, minY, maxX, maxY = bbox
+        cx, cy = (minX + maxX) / 2, (minY + maxY) / 2
+        w, h = maxX - minX, maxY - minY
+        pad_w, pad_h = (expand_factor - 1) * w / 2, (expand_factor - 1) * h / 2
+        crop_minX = max(0, int(cx - w/2 - pad_w))
+        crop_maxX = min(img_w, int(cx + w/2 + pad_w))
+        crop_minY = max(0, int(cy - h/2 - pad_h))
+        crop_maxY = min(img_h, int(cy + h/2 + pad_h))
+
+        # Crop and mask
+        crop_box = (crop_minX, crop_minY, crop_maxX, crop_maxY)
+        crop_img = pil_image.crop(crop_box).convert("RGB")
+        mask = Image.new("L", crop_img.size, 255)
+        draw = ImageDraw.Draw(mask)
+        # Draw all group polygons (shifted to crop coords) as white (mask out)
+        for gpoly in group_polygons:
+            shifted = [(x-crop_minX, y-crop_minY) for (x, y) in gpoly]
+            draw.polygon(shifted, fill=255)
+        # Apply mask: set masked areas to white
+        crop_np = np.array(crop_img)
+        mask_np = np.array(mask)
+        crop_np[mask_np == 255] = 255
+        crop_img = Image.fromarray(crop_np)
+
+        # OCR
+        ocr_data = pytesseract.image_to_data(
+            crop_img, 
+            output_type=pytesseract.Output.DICT, 
+            config="--psm 11"
+        )
+        texts = []
+        for i, txt in enumerate(ocr_data['text']):
+            txt = txt.strip()
+            if not txt:
+                continue
+            x, y = ocr_data['left'][i], ocr_data['top'][i]
+            w, h = ocr_data['width'][i], ocr_data['height'][i]
+            # Map to original image coords
+            orig_bbox = (x + crop_minX, y + crop_minY, x + crop_minX + w, y + crop_minY + h)
+            texts.append({'text': txt, 'orig_bbox': orig_bbox, 'bbox': (x, y, x+w, y+h)})
+
+        # Merge overlapping texts
+        merged = []
+        used = set()
+        def overlap(a, b, pad=2):
+            ax1, ay1, ax2, ay2 = a['orig_bbox']
+            bx1, by1, bx2, by2 = b['orig_bbox']
+            return not (ax2+pad < bx1 or ax1-pad > bx2 or ay2+pad < by1 or ay1-pad > by2)
+
+        for i, t in enumerate(texts):
+            if i in used: continue
+            group_idxs = [i]
+            for j in range(i+1, len(texts)):
+                if j in used: continue
+                if overlap(t, texts[j]):
+                    group_idxs.append(j)
+                    used.add(j)
+            all_bboxes = [texts[k]['orig_bbox'] for k in group_idxs]
+            merged_text = " ".join(texts[k]['text'] for k in group_idxs)
+            merged.append({
+                'text': merged_text,
+                'orig_bbox': all_bboxes[0],  # first bbox
+                'all_bboxes': all_bboxes
+            })
+            used.update(group_idxs)
+
+        results.append({
+            'crop': crop_img,
+            'ocr': merged
+        })
+    return results
