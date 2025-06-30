@@ -6,6 +6,7 @@ Combined OCR-enabled Shipyard box finder, grouper, and GUI.
 
 import os
 import math
+import json
 from PIL import Image, ImageDraw, ImageTk
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -13,11 +14,79 @@ import cv2
 import numpy as np
 import pytesseract
 import copy
+import difflib
 
 # Configure Tesseract to use the local "tesseract" folder
 script_dir = os.path.dirname(os.path.abspath(__file__))
 exe_name = "tesseract.exe" if os.name == "nt" else "tesseract"
 pytesseract.pytesseract.tesseract_cmd = os.path.join(script_dir, "tesseract", exe_name)
+
+# ——————————————————————————————
+# Load “#GroupName” headings from your Type list.txt
+def load_type_groups():
+    """Returns dict[group_name] → list of type-names under that heading."""
+    type_file = os.path.join(script_dir, "Type list.txt")
+    groups = {}
+    current = None
+    if not os.path.exists(type_file):
+        return groups
+    with open(type_file, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("#"):
+                current = line.lstrip("#").strip()
+                groups[current] = []
+            elif current:
+                groups[current].append(line)
+    return groups
+
+# Export the final mapping to JSON
+def export_boxes_to_json(mapping, box_groups, subsystem="ssd"):
+    """
+    mapping: dict[group_index]→matched_type
+    box_groups: list of groups, each group is list of (x,y,s)
+    Exports each box (not group) with its matched type and position.
+    """
+    type_groups = load_type_groups()
+    out = {subsystem: {}}
+    shield_count = 0
+
+    for gi, t in mapping.items():
+        if not t:
+            continue
+        # find which #group this type lives in
+        parent = None
+        for gname, members in type_groups.items():
+            if t in members:
+                parent = gname
+                break
+        if not parent:
+            continue
+
+        # For each box in this group, export individually
+        for b in box_groups[gi]:
+            x, y, s = b
+            cx = int(x + s / 2)
+            cy = int(y + s / 2)
+            if parent.lower() == "shield":
+                shield_count += 1
+            else:
+                out[subsystem].setdefault(t, []).append({
+                    "pos": f"{cx},{cy}",
+                    "arc": "",
+                    "designation": ""
+                })
+
+    if shield_count:
+        out[subsystem]["Shield"] = shield_count
+
+    path = os.path.join(script_dir, f"{subsystem}.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(out, f, indent=4)
+    print(f"Exported boxes → {path}")
+# ——————————————————————————————
 
 
 # ===================== BoxGrouper =====================
@@ -57,6 +126,27 @@ def connectNearbyBoxes(image, boxes):
         if b not in visited:
             grp = []
             dfs(b, grp, visited)
+
+            # --- New logic: search up to one box width away for unknown boxes ---
+            added = True
+            while added:
+                added = False
+                max_box_size = max(box[2] for box in grp) if grp else 0
+                to_add = []
+                for other in boxes:
+                    if other in visited:
+                        continue
+                    ox, oy, os = other
+                    for bx, by, bs in grp:
+                        dist = ((ox + os/2) - (bx + bs/2))**2 + ((oy + os/2) - (by + bs/2))**2
+                        if dist <= (max_box_size ** 2):
+                            to_add.append(other)
+                            break
+                for box_to_add in to_add:
+                    visited.add(box_to_add)
+                    grp.append(box_to_add)
+                    added = True
+
             groups.append(grp)
 
     for grp in groups:
@@ -72,51 +162,79 @@ def connectNearbyBoxes(image, boxes):
 
 
 # ===================== ShipyardBoxFinder =====================
+def findBlackOutlineBoxes(pil_image, square_tolerance=0.1, outlier_multiplier=1.5):
+    """
+    Finds black-outline boxes that are (approximately) square,
+    then removes size outliers based on IQR of their widths.
+    Accepts a PIL image and returns a list of (x, y, s) tuples.
+    """
+    # Convert PIL image to OpenCV format
+    img = np.array(pil_image.convert("RGB"))
+    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # Invert: black becomes white and vice versa
+    _, thresh = cv2.threshold(gray, 50, 255, cv2.THRESH_BINARY_INV)
+
+    # Find contours
+    contours, _ = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    candidates = []
+
+    # First pass: get all quads that look like squares
+    for cnt in contours:
+        if cv2.contourArea(cnt) < 100:
+            continue
+
+        approx = cv2.approxPolyDP(cnt, 0.02 * cv2.arcLength(cnt, True), True)
+        if len(approx) != 4:
+            continue
+
+        x, y, w, h = cv2.boundingRect(cnt)
+        rect_area = w * h
+        contour_area = cv2.contourArea(cnt)
+        fill_ratio = contour_area / rect_area if rect_area > 0 else 0
+        ratio = w / float(h)
+
+        # keep boxes that are ≥50% filled, roughly square
+        if fill_ratio >= 0.5 and abs(ratio - 1.0) <= square_tolerance:
+            s = max(w, h)
+            candidates.append((x, y, s))
+
+    # If no candidates, skip outlier step
+    if not candidates:
+        return []
+
+    # Outlier removal based on width IQR
+    widths = np.array([s for (_, _, s) in candidates])
+    q1, q3 = np.percentile(widths, [25, 75])
+    iqr = q3 - q1
+    lower_bound = q1 - outlier_multiplier * iqr
+    upper_bound = q3 + outlier_multiplier * iqr
+
+    boxes = [
+        box for box in candidates
+        if lower_bound <= box[2] <= upper_bound
+    ]
+
+    return boxes
+
 def processImage(image):
-    if image.mode != "RGB":
-        image = image.convert("RGB")
-    pixels = image.load()
-    w, h = image.size
-    squares = []
-    for y in range(h):
-        for x in range(w):
-            for off in range(5, 11):
-                if (0 <= x < w and 0 <= y - off < h and
-                    isColorWithinRange(pixels[x, y - off], (100, 100, 100), (0, 0, 0)) and
-                    0 <= y + off < h and
-                    isColorWithinRange(pixels[x, y + off], (100, 100, 100), (0, 0, 0)) and
-                    0 <= x - off < w and
-                    isColorWithinRange(pixels[x - off, y], (100, 100, 100), (0, 0, 0)) and
-                    0 <= x + off < w and
-                    isColorWithinRange(pixels[x + off, y], (100, 100, 100), (0, 0, 0))):
-                    if testPixelsBetweenCenterAndOffset(pixels, x, y, off, w, h):
-                        squares.append((x - off, y - off, 2 * off))
-                        break
-    valid = []
-    for (tx, ty, d) in squares:
-        off = d // 2
-        if checkWallColor(pixels, tx + off, ty + off, off, w, h):
-            valid.append((tx, ty, d))
-    valid = removeOverlappingSquares(valid)
-    valid = filterSmallSquares(valid)
-    return image, valid
+    # Use the new black-outline box finder
+    valids = findBlackOutlineBoxes(image, square_tolerance=0.1, outlier_multiplier=1.5)
+    img2, groups, polys, _ = connectNearbyBoxes(image, valids)
+    mapping = matchTextToGroups(img2, polys, groups, threshold=50)  # <-- pass groups as box_groups
+    print("Text → Group assignments:", mapping)
+    draw = ImageDraw.Draw(img2)
+    for grp in groups:
+        for (x, y, s) in grp:
+            draw.rectangle([x, y, x+s, y+s], outline="red", width=2)
+    # ─── NEW: export JSON ───────────────────────
+    export_boxes_to_json(mapping, groups, subsystem="ssd")
+    # ───────────────────────────────────────────────
+    return img2, groups, polys, mapping
 
 def isColorWithinRange(color, upper, lower):
     return all(lower[i] <= color[i] <= upper[i] for i in range(3))
-
-def testPixelsBetweenCenterAndOffset(pixels, cx, cy, off, w, h):
-    for i in range(1, off):
-        if (isPixelOutsideRange(pixels, cx, cy - i, w, h) or
-            isPixelOutsideRange(pixels, cx, cy + i, w, h) or
-            isPixelOutsideRange(pixels, cx - i, cy, w, h) or
-            isPixelOutsideRange(pixels, cx + i, cy, w, h)):
-            return True
-    return False
-
-def isPixelOutsideRange(pixels, x, y, w, h):
-    if 0 <= x < w and 0 <= y < h:
-        return not isColorWithinRange(pixels[x, y], (100, 100, 100), (0, 0, 0))
-    return False
 
 def checkWallColor(pixels, x, y, off, w, h):
     wallRange = ((100,100,100),(0,0,0))
@@ -159,43 +277,32 @@ def calculateOverlap(a, b):
 def filterSmallSquares(squares):
     if not squares: return squares
     avg = sum(d for _,_,d in squares) / len(squares)
-    thr = 0.8 * avg
+    thr = 0.5 * avg
     return [sq for sq in squares if sq[2] >= thr]
 
-
-# ===================== ShipyardText =====================
-def displayImagesInShapeDifference(inputImage, shape1CoordsList, boxList):
-    grouped_output = []
-    highlighted_images = []
-    if isinstance(inputImage, Image.Image):
-        inputImage = np.array(inputImage)
-    if len(inputImage.shape) == 3 and inputImage.shape[2] == 3:
-        inputImage = cv2.cvtColor(inputImage, cv2.COLOR_RGB2BGR)
-    if isinstance(inputImage, str):
-        inputImage = cv2.imread(inputImage)
-    for shape1Coords in shape1CoordsList:
-        mask = np.zeros(inputImage.shape[:2], dtype=np.uint8)
-        cv2.fillPoly(mask, [np.array(shape1Coords)], 255)
-        masked = cv2.bitwise_and(inputImage, inputImage, mask=mask)
-        for (x, y, s) in boxList:
-            tl = (max(x-3,0), max(y-3,0))
-            br = (min(x+s+3, inputImage.shape[1]), min(y+s+3, inputImage.shape[0]))
-            cv2.rectangle(masked, tl, br, (255,255,255), -1)
-        xs = [c[0] for c in shape1Coords]; ys = [c[1] for c in shape1Coords]
-        xmin, xmax = max(min(xs),0), min(max(xs), inputImage.shape[1])
-        ymin, ymax = max(min(ys),0), min(max(ys), inputImage.shape[0])
-        if xmin < xmax and ymin < ymax:
-            crop = masked[ymin:ymax, xmin:xmax]
-            if crop.size>0:
-                highlighted_images.append(crop)
-            else:
-                print("Warning: empty crop")
-        else:
-            print("Warning: invalid bbox")
-    return grouped_output
-
-
 # ===================== OCR Matching =====================
+def load_type_list():
+    """Load type list from 'Type list.txt' in the same folder, ignoring lines starting with '#'."""
+    type_file = os.path.join(script_dir, "Type list.txt")
+    if not os.path.exists(type_file):
+        return []
+    with open(type_file, encoding="utf-8") as f:
+        types = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
+    return types
+
+def best_type_match(text, type_list, threshold=0.7):
+    """Return best match from type_list if similarity >= threshold, else None."""
+    best = None
+    best_score = 0
+    for t in type_list:
+        score = difflib.SequenceMatcher(None, text.lower(), t.lower()).ratio()
+        if score > best_score:
+            best_score = score
+            best = t
+    if best_score >= threshold:
+        return best
+    return None
+
 def matchTextToGroups(pil_image, group_polygons, box_groups, threshold=50):
     """
     For each group polygon, starting from the most bottom-right, find the closest merged OCR text
@@ -285,6 +392,8 @@ def matchTextToGroups(pil_image, group_polygons, box_groups, threshold=50):
     assigned_texts = set()
     draw = ImageDraw.Draw(pil_image)
 
+    type_list = load_type_list()
+
     for gi in group_indices:
         poly = group_polygons[gi]
         minX, minY, maxX, maxY = group_bboxes[gi]
@@ -312,13 +421,15 @@ def matchTextToGroups(pil_image, group_polygons, box_groups, threshold=50):
         above_candidates.sort()
         if above_candidates:
             _, idx, m = above_candidates[0]
-            mapping[gi] = m['text']
+            matched = best_type_match(m['text'], type_list, threshold=0.7)
+            mapping[gi] = matched
             assigned_texts.add(idx)
             draw.polygon(poly, outline="pink", width=3)
             gx = sum(p[0] for p in poly)/4
             gy = sum(p[1] for p in poly)/4
             draw.line([(m['cx'], m['cy']), (gx, gy)], fill="blue", width=1)
-            draw.text((m['cx'], m['cy']), m['text'], fill="green")
+            if matched:
+                draw.text((m['cx'], m['cy']), matched, fill="green")
             continue  # Prioritized, skip fallback
 
         # 2. If none, find ungrouped text directly below (within horizontal bounds, below group)
@@ -336,13 +447,15 @@ def matchTextToGroups(pil_image, group_polygons, box_groups, threshold=50):
         below_candidates.sort()
         if below_candidates:
             _, idx, m = below_candidates[0]
-            mapping[gi] = m['text']
+            matched = best_type_match(m['text'], type_list, threshold=0.7)
+            mapping[gi] = matched
             assigned_texts.add(idx)
             draw.polygon(poly, outline="orange", width=3)
             gx = sum(p[0] for p in poly)/4
             gy = sum(p[1] for p in poly)/4
             draw.line([(m['cx'], m['cy']), (gx, gy)], fill="purple", width=1)
-            draw.text((m['cx'], m['cy']), m['text'], fill="green")
+            if matched:
+                draw.text((m['cx'], m['cy']), matched, fill="green")
             continue
 
         # 3. Fallback: closest text (original logic)
@@ -361,13 +474,15 @@ def matchTextToGroups(pil_image, group_polygons, box_groups, threshold=50):
         fallback_candidates.sort()
         if fallback_candidates:
             _, idx, m = fallback_candidates[0]
-            mapping[gi] = m['text']
+            matched = best_type_match(m['text'], type_list, threshold=0.7)
+            mapping[gi] = matched
             assigned_texts.add(idx)
             draw.polygon(poly, outline="gray", width=3)
             gx = sum(p[0] for p in poly)/4
             gy = sum(p[1] for p in poly)/4
             draw.line([(m['cx'], m['cy']), (gx, gy)], fill="gray", width=1)
-            draw.text((m['cx'], m['cy']), m['text'], fill="green")
+            if matched:
+                draw.text((m['cx'], m['cy']), matched, fill="green")
 
     return mapping
 
@@ -383,13 +498,25 @@ def openAndConvertToColor():
 
 def Processing(image):
     img1, valids = processImage(image)
-    img2, groups, polys, _ = connectNearbyBoxes(img1, valids)
+    img2, groups, polys, mapping = Processing(img)
+    current_box_groups = (img2, groups, polys)
+    current_text_mapping = mapping
+    photo = ImageTk.PhotoImage(img2)
+    image_label.config(image=photo); image_label.image = photo
+
+def Processing(image):
+    # Use the new black-outline box finder
+    valids = findBlackOutlineBoxes(image, square_tolerance=0.1, outlier_multiplier=1.5)
+    img2, groups, polys, _ = connectNearbyBoxes(image, valids)
     mapping = matchTextToGroups(img2, polys, groups, threshold=50)  # <-- pass groups as box_groups
     print("Text → Group assignments:", mapping)
     draw = ImageDraw.Draw(img2)
     for grp in groups:
         for (x, y, s) in grp:
             draw.rectangle([x, y, x+s, y+s], outline="red", width=2)
+    # ─── NEW: export JSON ───────────────────────
+    export_boxes_to_json(mapping, groups, subsystem="ssd")
+    # ───────────────────────────────────────────────
     return img2, groups, polys, mapping
 
 current_box_groups = None
@@ -468,7 +595,11 @@ def create_gui():
 
     global image_label
     image_label = tk.Label(root); image_label.pack()
+
+    # Ensure the app fully exits when the window is closed
+    root.protocol("WM_DELETE_WINDOW", root.quit)
     root.mainloop()
+    os._exit(0)  # Force exit to kill any background threads or windows
 
 if __name__ == "__main__":
     create_gui()
