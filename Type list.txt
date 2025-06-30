@@ -1,0 +1,38 @@
+A Hull
+APR
+Aux Con
+Battery
+Bridge
+Cargo
+Center Warp
+Damage Control
+Drone
+Emer Bridge
+Excess Damage
+F Hull
+Flag Bridge
+Impulse
+Lab
+Left Warp
+#Phaser
+PH-1
+PH-2
+PH-3
+PH-4
+Probe
+Scanner
+Sensor
+Shuttle
+# Shield
+Shield #1
+Shield #2
+Shield #3
+Shield #4
+Shield #5
+Shield #6
+# Torp
+SA
+Sol Gen
+PHOT
+Trans
+Tractor
