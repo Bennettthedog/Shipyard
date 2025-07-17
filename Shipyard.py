@@ -6,7 +6,6 @@ Combined OCR-enabled Shipyard box finder, grouper, and GUI.
 
 import os
 import math
-import json
 from PIL import Image, ImageDraw, ImageTk
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -15,6 +14,7 @@ import numpy as np
 import pytesseract
 import copy
 import difflib
+import json
 
 # Configure Tesseract to use the local "tesseract" folder
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -42,52 +42,15 @@ def load_type_groups():
                 groups[current].append(line)
     return groups
 
-# Export the final mapping to JSON
-def export_boxes_to_json(mapping, box_groups, subsystem="ssd"):
-    """
-    mapping: dict[group_index]→matched_type
-    box_groups: list of groups, each group is list of (x,y,s)
-    Exports each box (not group) with its matched type and position.
-    """
+def get_all_types():
+    """Flatten all types from all groups into a single list."""
     type_groups = load_type_groups()
-    out = {subsystem: {}}
-    shield_count = 0
+    return [t for group in type_groups.values() for t in group]
 
-    for gi, t in mapping.items():
-        if not t:
-            continue
-        # find which #group this type lives in
-        parent = None
-        for gname, members in type_groups.items():
-            if t in members:
-                parent = gname
-                break
-        if not parent:
-            continue
-
-        # For each box in this group, export individually
-        for b in box_groups[gi]:
-            x, y, s = b
-            cx = int(x + s / 2)
-            cy = int(y + s / 2)
-            if parent.lower() == "shield":
-                shield_count += 1
-            else:
-                out[subsystem].setdefault(t, []).append({
-                    "pos": f"{cx},{cy}",
-                    "arc": "",
-                    "designation": ""
-                })
-
-    if shield_count:
-        out[subsystem]["Shield"] = shield_count
-
-    path = os.path.join(script_dir, f"{subsystem}.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(out, f, indent=4)
-    print(f"Exported boxes → {path}")
 # ——————————————————————————————
-
+# Remove this old export_boxes_to_json function (lines 35–88)
+# def export_boxes_to_json(mapping, box_groups, subsystem="ssd"):
+#     ... (delete this function) ...
 
 # ===================== BoxGrouper =====================
 def connectNearbyBoxes(image, boxes):
@@ -229,7 +192,6 @@ def processImage(image):
         for (x, y, s) in grp:
             draw.rectangle([x, y, x+s, y+s], outline="red", width=2)
     # ─── NEW: export JSON ───────────────────────
-    export_boxes_to_json(mapping, groups, subsystem="ssd")
     # ───────────────────────────────────────────────
     return img2, groups, polys, mapping
 
@@ -385,14 +347,14 @@ def matchTextToGroups(pil_image, group_polygons, box_groups, threshold=50):
         minX, maxX = min(xs), max(xs)
         minY, maxY = min(ys), max(ys)
         group_bboxes.append((minX, minY, maxX, maxY))
-    # Sort by maxY (bottom), then maxX (right), descending
     group_indices.sort(key=lambda i: (group_bboxes[i][3], group_bboxes[i][2]), reverse=True)
 
     mapping = {gi: None for gi in range(len(group_polygons))}
     assigned_texts = set()
     draw = ImageDraw.Draw(pil_image)
 
-    type_list = load_type_list()
+    # Use all types from all groups for matching
+    type_list = get_all_types()
 
     for gi in group_indices:
         poly = group_polygons[gi]
@@ -411,7 +373,6 @@ def matchTextToGroups(pil_image, group_polygons, box_groups, threshold=50):
         for idx, m in enumerate(merged):
             if idx in assigned_texts:
                 continue
-            # Text must be above the group and horizontally overlap
             if m['bottom'] <= minY and minX <= m['cx'] <= maxX and m['h'] <= group_height:
                 dy = minY - m['bottom']
                 dx = abs(m['cx'] - (minX + maxX) / 2)
@@ -430,14 +391,13 @@ def matchTextToGroups(pil_image, group_polygons, box_groups, threshold=50):
             draw.line([(m['cx'], m['cy']), (gx, gy)], fill="blue", width=1)
             if matched:
                 draw.text((m['cx'], m['cy']), matched, fill="green")
-            continue  # Prioritized, skip fallback
+            continue
 
         # 2. If none, find ungrouped text directly below (within horizontal bounds, below group)
         below_candidates = []
         for idx, m in enumerate(merged):
             if idx in assigned_texts:
                 continue
-            # Text must be below the group and horizontally overlap
             if m['top'] >= maxY and minX <= m['cx'] <= maxX and m['h'] <= group_height:
                 dy = m['top'] - maxY
                 dx = abs(m['cx'] - (minX + maxX) / 2)
@@ -515,7 +475,6 @@ def Processing(image):
         for (x, y, s) in grp:
             draw.rectangle([x, y, x+s, y+s], outline="red", width=2)
     # ─── NEW: export JSON ───────────────────────
-    export_boxes_to_json(mapping, groups, subsystem="ssd")
     # ───────────────────────────────────────────────
     return img2, groups, polys, mapping
 
@@ -587,11 +546,113 @@ def show_cropped_ocr_images():
         win.grab_set()
         win.wait_window()
 
+def export_boxes_to_json(mapping, box_groups,
+                         subsystem=None,
+                         base_json="THO_NCL.json",
+                         out_path=None):
+    import os, json
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    base_path = os.path.join(script_dir, base_json)
+
+    # 1) Load existing template or initialize
+    if os.path.exists(base_path):
+        with open(base_path, 'r', encoding='utf-8') as f:
+            base = json.load(f)
+    else:
+        base = {'ssd': {}}
+
+    # Determine subsystem name
+    if subsystem is None:
+        subsystem = os.path.splitext(os.path.basename(base_json))[0]
+
+    # Load group definitions
+    type_groups = load_type_groups()
+    type_groups_lc = {
+        g.lower(): [t.lower() for t in types]
+        for g, types in type_groups.items()
+    }
+
+    new_ssd = {}
+
+    # 2) Torp, Drone, Phaser → one entry per box (unchanged)
+    for cat in ('torp', 'drone', 'phaser'):
+        members = type_groups_lc.get(cat, [])
+        entries = []
+        for gi, t in mapping.items():
+            if t and t.lower() in members:
+                for x, y, s in box_groups[gi]:
+                    cx = int(x + s/2)
+                    cy = int(y + s/2)
+                    entries.append({
+                        'type': t,
+                        'designation': '',
+                        'pos': f"{cx},{cy}",
+                        'arc': ''
+                    })
+        new_ssd[cat] = entries
+
+    # 3) Shields → counts per subtype (unchanged)
+    shield_counts = {}
+    for gi, t in mapping.items():
+        if t and t.lower() in type_groups_lc.get('shield', []):
+            key = t.lower().replace(' ', '_')
+            shield_counts[key] = shield_counts.get(key, 0) + len(box_groups[gi])
+    new_ssd['shields'] = shield_counts
+
+    # 4) Other category → export each subtype separately
+    for subtype in type_groups_lc.get('other', []):
+        positions = []
+        for gi, t in mapping.items():
+            if t and t.lower() == subtype:
+                for x, y, s in box_groups[gi]:
+                    cx = int(x + s/2)
+                    cy = int(y + s/2)
+                    positions.append({'pos': f"{cx},{cy}"})
+        new_ssd[subtype] = positions
+
+    # 5) Preserve sensor/scanner/damcon/excessdamage if present
+    for special in ('sensor', 'scanner', 'damcon', 'excessdamage'):
+        if special in base.get('ssd', {}):
+            new_ssd[special] = base['ssd'][special]
+
+    # 6) Write out
+    base['ssd'] = new_ssd
+    if out_path is None:
+        out_path = os.path.join(script_dir, f"{subsystem}.json")
+    with open(out_path, 'w', encoding='utf-8') as f:
+        json.dump(base, f, indent=4)
+
+    print(f"Exported → {out_path}")
+
+
+def export_json_gui():
+    global current_text_mapping, current_box_groups
+    # 1) make sure we’ve processed at least one image
+    if current_text_mapping is None or current_box_groups is None:
+        messagebox.showinfo("Export", "Process an image first.")
+        return
+
+    try:
+        # 2) actually call your existing export function
+        export_boxes_to_json(
+            current_text_mapping,
+            current_box_groups[1]   # pass just the 'groups' list
+        )
+        messagebox.showinfo("Export", "Exported JSON successfully.")
+    except Exception as e:
+        # 3) catch anything (FileNotFound, JSON errors, etc.) and display it
+        messagebox.showerror("Export Error", f"Failed to export JSON:\n{e}")
+
 def create_gui():
     root = tk.Tk(); root.title("Shipyard OCR Matcher")
     tk.Button(root, text="Load & Process Image", command=open_and_process_image).pack(pady=5)
     tk.Button(root, text="Show Text→Group Map",  command=show_text_mapping).pack(pady=5)
     tk.Button(root, text="Show Cropped OCR Images", command=show_cropped_ocr_images).pack(pady=5)
+    tk.Button(root,
+              text="Export as JSON",
+              command=export_json_gui
+             ).pack(pady=5)
 
     global image_label
     image_label = tk.Label(root); image_label.pack()
@@ -753,3 +814,6 @@ def ocr_group_crops(pil_image, group_polygons, expand_factor=1.3):
             'ocr': merged
         })
     return results
+
+# sheild results arent working
+# sorting isnt working
