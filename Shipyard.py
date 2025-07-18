@@ -181,19 +181,71 @@ def findBlackOutlineBoxes(pil_image, square_tolerance=0.1, outlier_multiplier=1.
 
     return boxes
 
+import re   # add this at the top with your other imports
+
+import re       # for regex
+import cv2      # for cv2.cvtColor
+import numpy as np
+from PIL import ImageDraw
+import pytesseract
+
 def processImage(image):
-    # Use the new black-outline box finder
-    valids = findBlackOutlineBoxes(image, square_tolerance=0.1, outlier_multiplier=1.5)
-    img2, groups, polys, _ = connectNearbyBoxes(image, valids)
-    mapping = matchTextToGroups(img2, polys, groups, threshold=50)  # <-- pass groups as box_groups
-    print("Text → Group assignments:", mapping)
+    """
+    Detect black‑outline boxes, OCR each one (cropping out the borders),
+    print a progress update for each box, fill any box containing text with
+    solid black, and return:
+      img2, groups, polys, mapping, box_texts
+    """
+    # 1. Find individual boxes
+    boxes = findBlackOutlineBoxes(image, square_tolerance=0.1, outlier_multiplier=1.5)
+    total = len(boxes)
+
+    # 2. OCR each box for any text (cropping in by a tiny border)
+    box_texts = {}
+    for idx, (x, y, s) in enumerate(boxes, start=1):
+        print(f"Searching box {idx}/{total} at (x={x}, y={y}, size={s})…")
+
+        # inset crop by a few pixels so we don't include the rectangle border
+        border = max(1, int(s * 0.03))  # ~3% of box size, at least 1px
+        left   = x + border
+        top    = y + border
+        right  = x + s - border
+        bottom = y + s - border
+
+        # ensure valid crop
+        if right <= left or bottom <= top:
+            crop = image.crop((x, y, x + s, y + s))
+        else:
+            crop = image.crop((left, top, right, bottom))
+
+        # convert to grayscale & OCR
+        gray = cv2.cvtColor(np.array(crop.convert("RGB")), cv2.COLOR_RGB2GRAY)
+        config = "--psm 6 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+        raw = pytesseract.image_to_string(gray, config=config)
+
+        # pick out the first alphanumeric character, if any
+        m = re.search(r"[A-Za-z0-9]", raw)
+        if m:
+            box_texts[idx-1] = m.group(0)
+
+    # 3. Report which boxes had text
+    for idx, char in box_texts.items():
+        x, y, s = boxes[idx]
+        print(f"→ Box {idx}: Position=({x}, {y}), Size={s} contains text '{char}'")
+
+    # 4. Group boxes and get polygons
+    img2, groups, polys, _ = connectNearbyBoxes(image, boxes)
+
+    # 5. Match group → type/text
+    mapping = matchTextToGroups(img2, polys, groups, threshold=50)
+
+    # 6. Fill any OCR’d box solid black
     draw = ImageDraw.Draw(img2)
-    for grp in groups:
-        for (x, y, s) in grp:
-            draw.rectangle([x, y, x+s, y+s], outline="red", width=2)
-    # ─── NEW: export JSON ───────────────────────
-    # ───────────────────────────────────────────────
-    return img2, groups, polys, mapping
+    for idx in box_texts:
+        x, y, s = boxes[idx]
+        draw.rectangle([x, y, x + s, y + s], fill="black")
+
+    return img2, groups, polys, mapping, box_texts
 
 def isColorWithinRange(color, upper, lower):
     return all(lower[i] <= color[i] <= upper[i] for i in range(3))
@@ -483,14 +535,21 @@ current_text_mapping = None
 image_label = None
 
 def open_and_process_image():
-    global current_box_groups, current_text_mapping
+    global current_box_groups, current_text_mapping, image_label
     img = openAndConvertToColor()
-    if not img: return
-    img2, groups, polys, mapping = Processing(img)
+    if not img:
+        return
+    # Use processImage to process the image and get labeled GUI image
+    img2, groups, polys, mapping, _ = processImage(img)
+    # Only highlight the groups in red
+    draw = ImageDraw.Draw(img2)
+    for poly in polys:
+        draw.polygon(poly, outline="red", width=4)
     current_box_groups = (img2, groups, polys)
     current_text_mapping = mapping
     photo = ImageTk.PhotoImage(img2)
-    image_label.config(image=photo); image_label.image = photo
+    image_label.config(image=photo)
+    image_label.image
 
 def show_box_groups():
     global current_box_groups
@@ -592,15 +651,7 @@ def export_boxes_to_json(mapping, box_groups,
                     })
         new_ssd[cat] = entries
 
-    # 3) Shields → counts per subtype (unchanged)
-    shield_counts = {}
-    for gi, t in mapping.items():
-        if t and t.lower() in type_groups_lc.get('shield', []):
-            key = t.lower().replace(' ', '_')
-            shield_counts[key] = shield_counts.get(key, 0) + len(box_groups[gi])
-    new_ssd['shields'] = shield_counts
-
-    # 4) Other category → export each subtype separately
+    # 3) Other category → export each subtype separately, skip empty lists
     for subtype in type_groups_lc.get('other', []):
         positions = []
         for gi, t in mapping.items():
@@ -609,12 +660,22 @@ def export_boxes_to_json(mapping, box_groups,
                     cx = int(x + s/2)
                     cy = int(y + s/2)
                     positions.append({'pos': f"{cx},{cy}"})
-        new_ssd[subtype] = positions
+        if positions:
+            new_ssd[subtype] = positions
 
-    # 5) Preserve sensor/scanner/damcon/excessdamage if present
+    # 4) Preserve sensor/scanner/damcon/excessdamage if present
     for special in ('sensor', 'scanner', 'damcon', 'excessdamage'):
         if special in base.get('ssd', {}):
             new_ssd[special] = base['ssd'][special]
+
+    # 5) Shields → counts per subtype (moved to bottom)
+    shield_counts = {}
+    for gi, t in mapping.items():
+        if t and t.lower() in type_groups_lc.get('shield', []):
+            key = t.lower().replace(' ', '_')
+            shield_counts[key] = shield_counts.get(key, 0) + len(box_groups[gi])
+    if shield_counts:
+        new_ssd['shields'] = shield_counts
 
     # 6) Write out
     base['ssd'] = new_ssd
