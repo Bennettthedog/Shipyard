@@ -1,0 +1,15 @@
+{
+  "name": "shipyard",
+  "version": "1.0.0",
+  "description": "Shipyard desktop app",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^40.0.0"
+  },
+  "dependencies": {
+    "electron-updater": "^6.6.0"
+  }
+}

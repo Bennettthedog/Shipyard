@@ -1,0 +1,307 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Shipyard</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="main">
+      <div id="leftPanel">
+        <div class="panelHeader">
+          <div class="panelHeaderBadge">SY</div>
+          <div class="panelHeaderText">SHIPYARD</div>
+          <button id="btnEditSetup" class="gearButton" aria-label="Edit Setup" title="Edit Setup"></button>
+        </div>
+
+        <div class="panelSection">
+          <div class="sectionTitle">Dataset</div>
+          <div class="stack">
+            <button id="btnRunXXVI">Read SSD</button>
+            <!-- RENAMED -->
+            <button id="btnShipyard">Convert to Veil</button>
+            <button id="btnConvertSSD">Convert to SuperLuminal</button>
+          </div>
+        </div>
+
+        <div class="panelSection">
+          <div class="sectionTitle">Tools</div>
+          <div class="stack">
+            <button id="btnEditJson">Edit JSON</button>
+            <button id="btnWeaponAnalysis">Ship Analysis</button>
+            <button id="btnMovementAnalysis">Movement Analysis</button>
+          </div>
+        </div>
+
+      </div>
+
+      <div id="contentPanel">
+
+        <div id="contentBody">
+          <!-- Image panel -->
+          <div id="imagePanel">
+            <div id="canvasWrap">
+              <canvas id="canvas"></canvas>
+              <div id="analysisTooltip" class="analysisTooltip"></div>
+            </div>
+          </div>
+
+          <!-- Properties panel -->
+            <div id="propsPanel">
+
+            <div id="convertPanel" class="panelSection hidden">
+              <div class="sectionTitle">Convert to SuperLuminal</div>
+              <div class="convertForm">
+                <div class="convertGrid">
+                  <label>BPV<input id="convertBpv" type="text" /></label>
+                  <label>Breakdown<span class="inputNote">low value</span><input id="convertBreakdown" type="text" /></label>
+                  <label>Shield Cost<input id="convertShieldCost" type="text" /></label>
+                  <label>Life Support<input id="convertLifeSupport" type="text" /></label>
+                  <label>Size Class<input id="convertSizeClass" type="text" /></label>
+                  <label>Turn Mode<input id="convertTurnMode" type="text" /></label>
+                  <label>Movement Cost<input id="convertMovementCost" type="text" /></label>
+                  <label>Min Crew<input id="convertMinCrew" type="text" /></label>
+                  <label>Spare Shuttles<span class="inputNote">Annex #3, master ship charts</span><input id="convertSpareShuttles" type="text" /></label>
+                  <label>Docking Points<span class="inputNote">Annex #3, master ship charts</span><input id="convertDockingPoints" type="text" /></label>
+                  <label>Explosion Strength<span class="inputNote">Annex #3, master ship charts</span><input id="convertExplosionStrength" type="text" /></label>
+                  <label>Command Rating<span class="inputNote">Annex #3, master ship charts</span><input id="convertCommandRating" type="text" /></label>
+                </div>
+                <div class="propActions">
+                  <button id="convertCancel">Cancel</button>
+                  <button id="convertConfirm">Convert</button>
+                </div>
+              </div>
+            </div>
+
+            <div id="arcPromptPanel" class="panelSection hidden">
+              <div class="sectionTitle">Arc Selection</div>
+              <div id="arcPromptTitle" class="hint">Select arcs</div>
+              <input
+                id="arcPromptFilter"
+                type="text"
+                placeholder="filter arcs..."
+              />
+              <div id="arcPromptOptions" class="arcPromptList"></div>
+              <div class="propActions">
+                <button id="arcPromptApply">Apply</button>
+                <button id="arcPromptCancel">Cancel</button>
+              </div>
+            </div>
+
+            <div id="designationPromptPanel" class="panelSection hidden">
+              <div class="sectionTitle">Designation</div>
+              <div id="designationPromptTitle" class="hint">Enter designation</div>
+              <input
+                id="designationPromptInput"
+                type="text"
+                placeholder="A"
+              />
+              <div class="propActions">
+                <button id="designationPromptApply">Apply</button>
+                <button id="designationPromptCancel">Cancel</button>
+              </div>
+            </div>
+
+            <div id="rankValuePromptPanel" class="panelSection hidden">
+              <div class="sectionTitle">Rank &amp; Value</div>
+              <div id="rankValuePromptTitle" class="hint">Set rank and value</div>
+              <div class="convertGrid">
+                <label>Rank<input id="rankValuePromptRank" type="text" /></label>
+                <label>Value<input id="rankValuePromptValue" type="text" /></label>
+              </div>
+              <div class="propActions">
+                <button id="rankValuePromptApply">Apply</button>
+                <button id="rankValuePromptCancel">Cancel</button>
+              </div>
+            </div>
+
+            <div id="rankRangePromptPanel" class="panelSection hidden">
+              <div class="sectionTitle">Rank Range</div>
+              <div id="rankRangePromptTitle" class="hint">Select first and last rank boxes</div>
+              <div class="convertGrid">
+                <label>First Rank Box<select id="rankRangePromptFirst"></select></label>
+                <label>Last Rank Box<select id="rankRangePromptLast"></select></label>
+              </div>
+              <div class="propActions">
+                <button id="rankRangePromptApply">Apply</button>
+                <button id="rankRangePromptCancel">Cancel</button>
+              </div>
+            </div>
+
+            <div id="analysisPanel" class="panelSection hidden">
+              <div class="sectionTitle">Ship Analysis</div>
+              <div id="analysisSummary" class="hint">Load a ship to view analysis.</div>
+              <div id="analysisShipStats" class="analysisStats"></div>
+              <div class="analysisFilters">
+                <button id="analysisFilterAll">All Weapons</button>
+                <button id="analysisFilterPhaser">Phasers Only</button>
+              </div>
+              <div class="analysisControls">
+                <label>Hex Radius<input id="analysisHexRadius" type="number" min="5" max="30" step="1" /></label>
+              </div>
+              <div class="analysisCompare">
+                <button id="analysisCompareLoad">Load Comparison</button>
+                <button id="analysisCompareClear">Clear Comparison</button>
+              </div>
+              <div class="analysisCompareMode">
+                <button id="analysisCompareModeNormal">Normal Heat</button>
+                <button id="analysisCompareModeDiff">Difference Heat</button>
+              </div>
+              <div id="analysisArcList" class="analysisList"></div>
+              <div id="analysisWeaponTables" class="analysisWeaponTables"></div>
+              <div class="propActions">
+                <button id="analysisClose">Close</button>
+              </div>
+            </div>
+
+            <div id="movementAnalysisPanel" class="panelSection hidden">
+              <div class="sectionTitle">Movement Analysis</div>
+              <div class="hint">Select a turn mode letter and speed to find the straight moves required before turning.</div>
+              <div class="convertGrid">
+                <label>Turn Mode<select id="movementAnalysisTurnMode"></select></label>
+                <label>Speed<input id="movementAnalysisSpeed" type="number" min="0" max="32" step="1" placeholder="10" /></label>
+                <label>Ending Direction (Optional)<select id="movementAnalysisEndingHeading"></select></label>
+              </div>
+              <div id="movementAnalysisSummary" class="analysisStats">Select a turn mode and speed.</div>
+              <div id="movementAnalysisRanges" class="analysisStats"></div>
+              <div class="propActions">
+                <button id="movementAnalysisClose">Close</button>
+              </div>
+            </div>
+
+            <div id="jsonEditPanel" class="panelSection hidden">
+              <div class="sectionTitle">Edit JSON</div>
+              <div class="hint">Click a box on the image to inspect associated data.</div>
+              <div class="panelSection">
+                <div class="sectionTitle">Selected Box</div>
+                <div id="jsonEditPropTitle" class="propTitle">Nothing selected</div>
+                <div id="jsonEditPropGrid" class="grid"></div>
+              </div>
+              <div class="panelSection">
+                <div class="sectionTitle">Raw JSON (selected)</div>
+                <textarea id="jsonEditRawJson" spellcheck="false"></textarea>
+              </div>
+              <div class="propActions">
+                <button id="jsonEditAddBox">Add Box</button>
+                <button id="jsonEditSave">Save JSON</button>
+                <button id="jsonEditClose">Close</button>
+              </div>
+            </div>
+
+            <div id="xxviPanel" class="panelSection hidden">
+              <div class="sectionTitle">Shipyard XXVI</div>
+              <div class="progressWrap">
+                <div id="xxviProgressLabel" class="hint">Idle</div>
+                <div class="progressBar">
+                  <div id="xxviProgressFill"></div>
+                </div>
+              </div>
+              <pre id="xxviOutput" class="logOutput"></pre>
+            </div>
+
+            <!-- Energy allocation UI -->
+            <div id="energyPanel" class="hidden">
+              <div class="propTitle energyTitle">Energy Allocation</div>
+              <div id="energyTable" class="energyTable"></div>
+            </div>
+
+            <!-- Shipyard UI -->
+            <div id="shipyardPanel" class="hidden">
+              <div class="propTitle" id="shipyardTitle">Shipyard</div>
+              <div class="propActions">
+                <button id="btnShipyardCancel">Cancel Shipyard</button>
+              </div>
+
+              <div id="shipyardNameStep">
+                <div class="panelSection">
+                  <div class="sectionTitle">Ship Name</div>
+                  <input
+                    id="shipyardShipName"
+                    type="text"
+                    placeholder="Enter ship name..."
+                  />
+                  <div class="hint">
+                    Optional: renames the folder + image + JSON and sets the ship name.
+                    Click Skip to keep the original names.
+                  </div>
+                </div>
+
+                <div class="propActions">
+                  <button id="shipyardNameStart">Rename + Continue</button>
+                  <button id="shipyardNameSkip">Skip Rename</button>
+                  <button id="shipyardNameCancel">Cancel</button>
+                </div>
+              </div>
+
+              <div id="shipyardLabelStep" class="hidden">
+                <div class="panelSection">
+                  <div class="sectionTitle">Filter</div>
+                  <input
+                    id="shipyardFilter"
+                    type="text"
+                    placeholder="type to filter options..."
+                  />
+                </div>
+
+                <div class="panelSection grow">
+                  <div class="sectionTitle">Choose Label</div>
+                  <select id="shipyardSelect" size="14"></select>
+                </div>
+
+                <div class="propActions">
+                  <button id="shipyardRemoveGroup">Remove</button>
+                  <button id="shipyardSkip">Skip</button>
+                  <button id="shipyardApply">Apply</button>
+                  <button id="shipyardCancel">Cancel</button>
+                </div>
+              </div>
+
+              <div id="shipyardDoneStep" class="hidden">
+                <div class="panelSection">
+                  <div class="sectionTitle">Shipyard Complete</div>
+                  <div id="shipyardDoneText" class="hint">
+                    All unlabeled groups and ungrouped squares have been processed.
+                  </div>
+                </div>
+
+                <div class="panelSection">
+                  <div class="sectionTitle">Selected Box</div>
+                  <div id="shipyardPropTitle" class="propTitle">Nothing selected</div>
+                  <div id="shipyardPropGrid" class="grid"></div>
+                </div>
+
+                <div id="heavyDesignationPanel" class="panelSection hidden">
+                  <div class="sectionTitle">Heavy Weapon Designation</div>
+                  <div id="heavyDesignationLabel" class="propTitle">Select a box</div>
+                  <input id="heavyDesignationInput" type="text" placeholder="A" />
+                  <div class="propActions">
+                    <button id="heavyDesignationCancel">Cancel</button>
+                    <button id="heavyDesignationApply">Save</button>
+                  </div>
+                </div>
+
+                <div class="panelSection" id="shipyardRawPanel">
+                  <div class="sectionTitle">Raw JSON (selected)</div>
+                  <textarea
+                    id="shipyardRawJson"
+                    spellcheck="false"
+                  ></textarea>
+                </div>
+
+                <div class="propActions" id="shipyardDoneActions">
+                  <button id="shipyardAddSquare">Add Square</button>
+                  <button id="shipyardAddGroup">Add to Group</button>
+                  <button id="shipyardEditLabel">Edit Label/Name</button>
+                  <button id="shipyardDoneSave">Save JSON</button>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>
