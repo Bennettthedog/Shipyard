@@ -7143,6 +7143,340 @@ function clearAnalysisComparison() {
   renderCanvas()
 }
 
+function normalizeMissingShipPath(pathText) {
+  return String(pathText || "")
+    .trim()
+    .replace(/[\\/]+/g, "\\")
+}
+
+function toCount(value, fallback = 0) {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n < 0) return Math.max(0, Number(fallback) || 0)
+  return Math.floor(n)
+}
+
+function buildMissingSuperluminalModel(res) {
+  const normalizedMissing = Array.isArray(res?.missing)
+    ? res.missing
+      .map((item) => normalizeMissingShipPath(item))
+      .filter(Boolean)
+    : []
+
+  const uniqueMissing = Array.from(new Set(normalizedMissing))
+    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))
+
+  const missingCount = uniqueMissing.length
+  const veilCount = toCount(res?.veilCount, missingCount)
+  const superluminalCount = toCount(res?.superluminalCount, 0)
+  const matchedCount = Math.max(0, veilCount - missingCount)
+  const coverageRatio = veilCount > 0 ? matchedCount / veilCount : 1
+  const coveragePercent = Math.round(Math.min(1, Math.max(0, coverageRatio)) * 100)
+
+  const byGroup = new Map()
+  for (const relPath of uniqueMissing) {
+    const parts = relPath.split("\\").filter(Boolean)
+    const groupKey = parts.length > 1 ? parts[0] : "(Root)"
+    byGroup.set(groupKey, (byGroup.get(groupKey) || 0) + 1)
+  }
+
+  const groups = Array.from(byGroup.entries())
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, undefined, { sensitivity: "base" }))
+
+  return {
+    veilShipsDir: String(res?.veilShipsDir || "").trim() || "(unknown)",
+    superluminalShipsDir: String(res?.superluminalShipsDir || "").trim() || "(unknown)",
+    veilCount,
+    superluminalCount,
+    missingCount,
+    matchedCount,
+    coveragePercent,
+    groups,
+    missingPaths: uniqueMissing
+  }
+}
+
+function buildMissingSuperluminalReportText(model) {
+  const lines = [
+    `Missing from SuperLuminal: ${model.missingCount}`,
+    `Matched: ${model.matchedCount}`,
+    `Coverage: ${model.coveragePercent}%`,
+    `Veil ships: ${model.veilCount}`,
+    `SuperLuminal ships: ${model.superluminalCount}`,
+    "",
+    `Veil folder: ${model.veilShipsDir}`,
+    `SuperLuminal folder: ${model.superluminalShipsDir}`,
+    "",
+    "Missing ship folders:",
+    ...(model.missingPaths.length > 0 ? model.missingPaths : ["(none)"])
+  ]
+  return lines.join("\n")
+}
+
+async function copyTextToClipboardSafe(text) {
+  const value = String(text || "")
+  if (!value) return false
+
+  if (navigator?.clipboard && typeof navigator.clipboard.writeText === "function") {
+    try {
+      await navigator.clipboard.writeText(value)
+      return true
+    } catch {}
+  }
+
+  try {
+    const temp = document.createElement("textarea")
+    temp.value = value
+    temp.setAttribute("readonly", "readonly")
+    temp.style.position = "fixed"
+    temp.style.opacity = "0"
+    temp.style.pointerEvents = "none"
+    document.body.appendChild(temp)
+    temp.focus()
+    temp.select()
+    const copied = document.execCommand("copy")
+    document.body.removeChild(temp)
+    return copied
+  } catch {
+    return false
+  }
+}
+
+function showMissingSuperluminalResultsModal(model) {
+  const overlay = document.createElement("div")
+  overlay.className = "modalOverlay missingShipsOverlay"
+
+  const card = document.createElement("div")
+  card.className = "modalCard missingShipsCard"
+
+  const header = document.createElement("div")
+  header.className = "missingShipsHeader"
+
+  const headerLeft = document.createElement("div")
+  const title = document.createElement("div")
+  title.className = "modalTitle"
+  title.textContent = "Veil vs SuperLuminal Comparison"
+  const desc = document.createElement("div")
+  desc.className = "modalDesc missingShipsDesc"
+  desc.textContent = "Missing ship folders from Veil that are not yet in SuperLuminal."
+  const pathLineA = document.createElement("div")
+  pathLineA.className = "missingShipsPath"
+  pathLineA.textContent = `Veil: ${model.veilShipsDir}`
+  const pathLineB = document.createElement("div")
+  pathLineB.className = "missingShipsPath"
+  pathLineB.textContent = `SuperLuminal: ${model.superluminalShipsDir}`
+  headerLeft.appendChild(title)
+  headerLeft.appendChild(desc)
+  headerLeft.appendChild(pathLineA)
+  headerLeft.appendChild(pathLineB)
+
+  const closeTop = document.createElement("button")
+  closeTop.className = "missingShipsCloseBtn"
+  closeTop.textContent = "Close"
+
+  header.appendChild(headerLeft)
+  header.appendChild(closeTop)
+
+  const stats = document.createElement("div")
+  stats.className = "missingShipsStats"
+  const makeStat = (label, value, tone = "") => {
+    const box = document.createElement("div")
+    box.className = `missingShipsStat ${tone}`.trim()
+    const v = document.createElement("div")
+    v.className = "missingShipsStatValue"
+    v.textContent = String(value)
+    const l = document.createElement("div")
+    l.className = "missingShipsStatLabel"
+    l.textContent = label
+    box.appendChild(v)
+    box.appendChild(l)
+    return box
+  }
+  stats.appendChild(makeStat("Veil Ship Folders", model.veilCount))
+  stats.appendChild(makeStat("SuperLuminal Folders", model.superluminalCount))
+  stats.appendChild(makeStat("Missing", model.missingCount, model.missingCount > 0 ? "isAlert" : "isGood"))
+
+  const coverage = document.createElement("div")
+  coverage.className = "missingShipsCoverage"
+  const coverageLabel = document.createElement("div")
+  coverageLabel.className = "missingShipsCoverageLabel"
+  coverageLabel.textContent = `Coverage: ${model.coveragePercent}% (${model.matchedCount}/${model.veilCount} matched)`
+  const coverageMeter = document.createElement("div")
+  coverageMeter.className = "missingShipsCoverageMeter"
+  const coverageFill = document.createElement("div")
+  coverageFill.className = "missingShipsCoverageFill"
+  if (model.coveragePercent >= 80) coverageFill.classList.add("isGood")
+  else if (model.coveragePercent <= 40) coverageFill.classList.add("isAlert")
+  coverageFill.style.width = `${Math.max(0, Math.min(100, model.coveragePercent))}%`
+  coverageMeter.appendChild(coverageFill)
+  coverage.appendChild(coverageLabel)
+  coverage.appendChild(coverageMeter)
+
+  const body = document.createElement("div")
+  body.className = "missingShipsBody"
+
+  const left = document.createElement("div")
+  left.className = "missingShipsLeft"
+  const groupTitle = document.createElement("div")
+  groupTitle.className = "missingShipsSectionTitle"
+  groupTitle.textContent = "By Faction/Folder"
+  const groupWrap = document.createElement("div")
+  groupWrap.className = "missingShipsGroups"
+  if (model.groups.length === 0) {
+    const none = document.createElement("div")
+    none.className = "missingShipsHint"
+    none.textContent = "No missing folders."
+    groupWrap.appendChild(none)
+  } else {
+    for (const group of model.groups) {
+      const chip = document.createElement("div")
+      chip.className = "missingShipsGroupChip"
+      chip.textContent = `${group.name}: ${group.count}`
+      groupWrap.appendChild(chip)
+    }
+  }
+
+  const rawTitle = document.createElement("div")
+  rawTitle.className = "missingShipsSectionTitle"
+  rawTitle.textContent = "Raw List"
+  const rawList = document.createElement("textarea")
+  rawList.className = "missingShipsRaw"
+  rawList.readOnly = true
+  rawList.value = model.missingPaths.length > 0 ? model.missingPaths.join("\n") : "(none)"
+  left.appendChild(groupTitle)
+  left.appendChild(groupWrap)
+  left.appendChild(rawTitle)
+  left.appendChild(rawList)
+
+  const right = document.createElement("div")
+  right.className = "missingShipsRight"
+  const listTitle = document.createElement("div")
+  listTitle.className = "missingShipsSectionTitle"
+  listTitle.textContent = "Missing Ship Folder List"
+  const filterRow = document.createElement("div")
+  filterRow.className = "missingShipsFilterRow"
+  const filterInput = document.createElement("input")
+  filterInput.type = "text"
+  filterInput.placeholder = "Filter missing folder names..."
+  filterInput.className = "missingShipsFilterInput"
+  const listCount = document.createElement("div")
+  listCount.className = "missingShipsListCount"
+  filterRow.appendChild(filterInput)
+  filterRow.appendChild(listCount)
+  const list = document.createElement("ul")
+  list.className = "missingShipsList"
+
+  const renderList = () => {
+    const query = String(filterInput.value || "").trim().toLowerCase()
+    const items = query
+      ? model.missingPaths.filter((item) => item.toLowerCase().includes(query))
+      : model.missingPaths
+
+    list.innerHTML = ""
+    listCount.textContent = `${items.length} shown`
+
+    if (items.length === 0) {
+      const li = document.createElement("li")
+      li.className = "missingShipsListEmpty"
+      li.textContent = "No matching folders."
+      list.appendChild(li)
+      return
+    }
+
+    for (let i = 0; i < items.length; i++) {
+      const li = document.createElement("li")
+      li.className = "missingShipsItem"
+      const index = document.createElement("span")
+      index.className = "missingShipsItemIndex"
+      index.textContent = `${i + 1}.`
+      const name = document.createElement("span")
+      name.className = "missingShipsItemName"
+      name.textContent = items[i]
+      li.appendChild(index)
+      li.appendChild(name)
+      list.appendChild(li)
+    }
+  }
+  filterInput.oninput = () => renderList()
+  renderList()
+
+  right.appendChild(listTitle)
+  right.appendChild(filterRow)
+  right.appendChild(list)
+
+  body.appendChild(left)
+  body.appendChild(right)
+
+  const actions = document.createElement("div")
+  actions.className = "modalActions missingShipsActions"
+  const copyListBtn = document.createElement("button")
+  copyListBtn.textContent = "Copy List"
+  const copyReportBtn = document.createElement("button")
+  copyReportBtn.textContent = "Copy Report"
+  const closeBtn = document.createElement("button")
+  closeBtn.textContent = "Close"
+  actions.appendChild(copyListBtn)
+  actions.appendChild(copyReportBtn)
+  actions.appendChild(closeBtn)
+
+  card.appendChild(header)
+  card.appendChild(stats)
+  card.appendChild(coverage)
+  card.appendChild(body)
+  card.appendChild(actions)
+  overlay.appendChild(card)
+  document.body.appendChild(overlay)
+
+  const cleanup = () => {
+    window.removeEventListener("keydown", onKey)
+    if (overlay.parentElement) overlay.parentElement.removeChild(overlay)
+  }
+
+  const close = () => cleanup()
+  const onKey = (e) => {
+    if (e.key === "Escape") close()
+  }
+
+  window.addEventListener("keydown", onKey)
+  overlay.onclick = (e) => {
+    if (e.target === overlay) close()
+  }
+  closeTop.onclick = () => close()
+  closeBtn.onclick = () => close()
+
+  copyListBtn.onclick = async () => {
+    const ok = await copyTextToClipboardSafe(rawList.value)
+    if (ok) showTempMessage("Missing list copied.")
+    else alert("Could not copy list to clipboard.")
+  }
+
+  copyReportBtn.onclick = async () => {
+    const ok = await copyTextToClipboardSafe(buildMissingSuperluminalReportText(model))
+    if (ok) showTempMessage("Comparison report copied.")
+    else alert("Could not copy report to clipboard.")
+  }
+
+  if (model.missingCount > 0) filterInput.focus()
+  else closeBtn.focus()
+}
+
+async function showMissingSuperluminalShips() {
+  if (!window.api || typeof window.api.shipyardListMissingSuperluminalShips !== "function") {
+    alert("Missing-ship scan is not available.")
+    return
+  }
+
+  const res = await window.api.shipyardListMissingSuperluminalShips()
+  if (!res || !res.ok) {
+    alert(res?.error || "Failed to compare Veil and SuperLuminal ship folders.")
+    return
+  }
+
+  const model = buildMissingSuperluminalModel(res)
+  showMissingSuperluminalResultsModal(model)
+  if (model.missingCount === 0) showTempMessage("No missing ships found.")
+}
+
 /* -----------------------------
    Shipyard flow
 ----------------------------- */
@@ -7522,6 +7856,14 @@ function wireEvents() {
       await enterConvertMode(picked)
     } catch (e) {
       alert(e?.message || "SSD conversion failed.")
+    }
+  })
+
+  bindClick("btnMissingSuperluminal", async () => {
+    try {
+      await showMissingSuperluminalShips()
+    } catch (e) {
+      alert(e?.message || "Missing-ship scan failed.")
     }
   })
 

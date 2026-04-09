@@ -136,6 +136,7 @@ function sanitizeFileName(name) {
 }
 
 const VEIL_FOLDER_MARKER = "#"
+const SUPERLUMINAL_FOLDER_SUFFIX = " superluminal"
 
 function stripVeilMarker(name) {
   const raw = String(name || "").trimEnd()
@@ -152,6 +153,31 @@ function stripVeilMarker(name) {
 
 function makeVeilUnmarkedName(rawName) {
   return sanitizeFileName(stripVeilMarker(rawName))
+}
+
+function stripSuperluminalFolderSuffix(name) {
+  const raw = String(name || "").trimEnd()
+  if (!raw) return ""
+  const suffix = SUPERLUMINAL_FOLDER_SUFFIX
+  const rawLower = raw.toLowerCase()
+  if (suffix && rawLower.endsWith(suffix)) {
+    return raw.slice(0, raw.length - suffix.length).trimEnd()
+  }
+  return raw.trim()
+}
+
+function normalizeShipFolderComparisonName(name) {
+  return stripSuperluminalFolderSuffix(stripVeilMarker(name))
+    .trim()
+    .toLowerCase()
+}
+
+function normalizeShipFolderComparisonPath(relativePath) {
+  const parts = String(relativePath || "")
+    .split(/[\\/]+/)
+    .map((part) => normalizeShipFolderComparisonName(part))
+    .filter(Boolean)
+  return parts.join("/")
 }
 
 async function ensureUniquePath(targetPath) {
@@ -709,6 +735,104 @@ async function getDefaultSuperluminalShipsPath() {
   return await getDefaultShipsPath()
 }
 
+async function getDefaultSuperluminalComparisonPath() {
+  const fallback = await getDefaultSuperluminalShipsPath()
+  const candidates = [
+    userConfig.superluminalShipsDir ? path.resolve(userConfig.superluminalShipsDir) : null,
+    path.resolve(__dirname, "..", "..", "Superluminal Ships"),
+    path.resolve(__dirname, "..", "Superluminal Ships"),
+    path.resolve(app.getPath("documents"), "Warframe Data Matrix", "Superluminal Ships"),
+    fallback
+  ]
+  const seen = new Set()
+  for (const candidate of candidates) {
+    if (!candidate) continue
+    const resolved = path.resolve(candidate)
+    const key = resolved.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    try {
+      const stat = await fs.stat(resolved)
+      if (stat.isDirectory()) return resolved
+    } catch {}
+  }
+  return null
+}
+
+async function listShipFolders(rootDir) {
+  const results = []
+  const stack = [""]
+
+  while (stack.length > 0) {
+    const relativePath = stack.pop()
+    const folderPath = relativePath ? path.join(rootDir, relativePath) : rootDir
+    let entries = null
+    try {
+      entries = await fs.readdir(folderPath, { withFileTypes: true })
+    } catch {
+      continue
+    }
+
+    if (!Array.isArray(entries)) continue
+    const hasJson = entries.some(
+      (entry) =>
+        entry?.isFile &&
+        entry.isFile() &&
+        String(entry.name || "").toLowerCase().endsWith(".json")
+    )
+
+    if (relativePath && hasJson) {
+      const folderName = path.basename(folderPath)
+      const compareKey = normalizeShipFolderComparisonPath(relativePath)
+      if (compareKey) {
+        results.push({ folderName, compareKey, folderPath, relativePath })
+      }
+    }
+
+    for (const entry of entries) {
+      if (!entry?.isDirectory || !entry.isDirectory()) continue
+      const dirName = String(entry.name || "").trim()
+      if (!dirName || dirName.startsWith(".")) continue
+      const childPath = relativePath ? path.join(relativePath, dirName) : dirName
+      stack.push(childPath)
+    }
+  }
+
+  return results
+}
+
+async function listVeilShipsMissingFromSuperluminal() {
+  const veilShipsDir = await getDefaultShipsPath()
+  if (!veilShipsDir) {
+    throw new Error("Could not find the Veil Ships folder. Use Edit Setup to configure it.")
+  }
+
+  const superluminalShipsDir = await getDefaultSuperluminalComparisonPath()
+  if (!superluminalShipsDir) {
+    throw new Error("Could not find the Superluminal Ships folder. Use Edit Setup to configure it.")
+  }
+
+  const [veilFolders, superluminalFolders] = await Promise.all([
+    listShipFolders(veilShipsDir),
+    listShipFolders(superluminalShipsDir)
+  ])
+  const superluminalKeys = new Set(
+    superluminalFolders.map((item) => item.compareKey).filter(Boolean)
+  )
+  const missing = veilFolders
+    .filter((item) => item.compareKey && !superluminalKeys.has(item.compareKey))
+    .map((item) => item.relativePath)
+    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))
+
+  return {
+    veilShipsDir,
+    superluminalShipsDir,
+    veilCount: veilFolders.length,
+    superluminalCount: superluminalFolders.length,
+    missing
+  }
+}
+
 function getSuperluminalOutputFolder(inputFolder) {
   const baseFolderName = stripVeilMarker(path.basename(inputFolder))
   const lowerName = baseFolderName.toLowerCase()
@@ -909,6 +1033,10 @@ handleObjectIpc("shipyard:readExistingSuperluminal", async (event, inputFolder) 
   return { jsonText: JSON.stringify(existing.doc, null, 2) }
 })
 
+handleObjectIpc("shipyard:listMissingSuperluminalShips", async () => {
+  return await listVeilShipsMissingFromSuperluminal()
+})
+
 handleObjectIpc("shipyard:readSectionEntries", async (event, sectionLabel) => {
   const entries = await readDataSectionEntries(sectionLabel)
   return { entries }
@@ -1033,18 +1161,15 @@ ipcMain.handle("setup:editPaths", async () => {
       return picked.filePaths[0]
     }
 
-    const currentGames = userConfig.gamesDir
     const currentShips = userConfig.shipsDir
     const currentSuperluminal = userConfig.superluminalShipsDir
 
-    const gamesDir = await pickDir("Select Games folder", currentGames)
     const shipsDir = await pickDir("Select Ships folder", currentShips)
     const superluminalShipsDir = await pickDir(
       "Select Superluminal Ships folder",
       currentSuperluminal
     )
 
-    if (gamesDir) userConfig.gamesDir = gamesDir
     if (shipsDir) userConfig.shipsDir = shipsDir
     if (superluminalShipsDir) userConfig.superluminalShipsDir = superluminalShipsDir
 

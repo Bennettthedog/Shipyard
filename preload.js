@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld("api", {
   readExternalList: () => invoke("shipyard:readExternalList"),
   shipyardReadWeaponDamage: () => invoke("shipyard:readWeaponDamage"),
   shipyardReadTurnMovement: () => invoke("shipyard:readTurnMovement"),
+  shipyardListMissingSuperluminalShips: () =>
+    invoke("shipyard:listMissingSuperluminalShips"),
   shipyardPickFolderNamed: () => invoke("shipyard:pickFolderNamed"),
 
   // NEW: load without rename
