@@ -13,6 +13,7 @@ const configPath = path.join(app.getPath("userData"), "settings.json")
 let mainWindow = null
 let shipyardXXVIProcess = null
 let userConfig = { shipsDir: null, gamesDir: null, superluminalShipsDir: null }
+const SUPERLUMINAL_CONFIG_FILE = "SLConfig.json"
 const IMAGE_EXTENSIONS = Object.freeze([
   ".png",
   ".jpg",
@@ -686,17 +687,13 @@ function cloneTemplateItem(item) {
 }
 
 async function readTemplatePath() {
-  const candidates = [
-    path.join(__dirname, "SLConfig.json"),
-    path.resolve(__dirname, "..", "SLConfig.json")
-  ]
-  for (const candidate of candidates) {
-    try {
-      await fs.access(candidate)
-      return candidate
-    } catch {}
+  const templatePath = path.join(__dirname, SUPERLUMINAL_CONFIG_FILE)
+  try {
+    await fs.access(templatePath)
+    return templatePath
+  } catch {
+    return null
   }
-  return null
 }
 
 async function readHitAndRunTerms() {
@@ -1283,7 +1280,7 @@ ipcMain.handle("shipyard:convertSSDJson", async (event, payload) => {
   try {
     const templatePath = await readTemplatePath()
     if (!templatePath) {
-      return { ok: false, error: "SLConfig.json template not found." }
+      return { ok: false, error: `${SUPERLUMINAL_CONFIG_FILE} template not found.` }
     }
 
     const dataNames = await readDataNames()

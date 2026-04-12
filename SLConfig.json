@@ -1,0 +1,200 @@
+{
+  "shipData": {
+    "empire": "",
+    "type": "",
+    "bpv": "",
+    "breakdown": "",
+    "shieldCost": "",
+    "lifeSupport": "",
+    "sizeClass": "",
+    "turnMode": "",
+    "movementCost": "",
+    "crewUnits": 0,
+    "minCrew": "",
+    "boardingParties": 0,
+    "tBombs": 0,
+    "dBombs": 0,
+    "probes": 0,
+    "shuttles": {
+      "bay": [
+        {
+          "size": 0,
+          "admin": 0
+        },
+        {
+          "size": 0,
+          "admin": 0
+        }
+      ],
+      "spareShuttles": ""
+    },
+    "hitAndRun": {
+      "Cloak": 0
+    },
+    "dockingPoints": "",
+    "explosionStrength": "",
+    "commandRating": ""
+  },
+  "ssd": {
+    "heavy": [
+      {
+        "type": "",
+        "designation": "",
+        "pos": "",
+        "arc": ""
+      }
+    ],
+    "phaser": [
+      {
+        "type": "",
+        "designation": "",
+        "pos": "",
+        "arc": ""
+      }
+    ],
+    "flagbridge": [
+      {
+        "pos": ""
+      }
+    ],
+    "bridge": [
+      {
+        "pos": ""
+      }
+    ],
+    "cloak": [
+      {
+        "pos": ""
+      }
+    ],
+    "tran": [
+      {
+        "pos": ""
+      }
+    ],
+    "trac": [
+      {
+        "pos": ""
+      }
+    ],
+    "fhull": [
+      {
+        "pos": ""
+      }
+    ],
+    "imp": [
+      {
+        "pos": ""
+      }
+    ],
+    "cwarp": [
+      {
+        "pos": ""
+      }
+    ],
+    "ahull": [
+      {
+        "pos": ""
+      }
+    ],
+    "btty": [
+      {
+        "pos": ""
+      }
+    ],
+    "lab": [
+      {
+        "pos": ""
+      }
+    ],
+    "lwarp": [
+      {
+        "pos": ""
+      }
+    ],
+    "rwarp": [
+      {
+        "pos": ""
+      }
+    ],
+    "shuttle": [
+      {
+        "pos": ""
+      }
+    ],
+    "aux": [
+      {
+        "pos": ""
+      }
+    ],
+    "apr": [
+      {
+        "pos": ""
+      }
+    ],
+    "probe": [
+      {
+        "pos": ""
+      }
+    ],
+    "boarding": [
+      {
+        "pos": ""
+      }
+    ],
+    "crew": [
+      {
+        "pos": ""
+      }
+    ],
+    "hitandrun": [
+      {
+        "pos": ""
+      }
+    ],
+    "tbomb": [
+      {
+        "pos": ""
+      }
+    ],
+    "dbomb": [
+      {
+        "pos": ""
+      }
+    ],
+    "sensor": [
+      {
+        "pos": "",
+        "value": 0,
+        "rank": 0
+      }
+    ],
+    "scanner": [
+      {
+        "pos": "",
+        "value": 0,
+        "rank": 0
+      }
+    ],
+    "damcon": [
+      {
+        "pos": "",
+        "value": 0,
+        "rank": 0
+      }
+    ],
+    "excessdamage": [
+      {
+        "pos": ""
+      }
+    ],
+    "shields": {
+      "shield_1": 0,
+      "shield_2": 0,
+      "shield_3": 0,
+      "shield_4": 0,
+      "shield_5": 0,
+      "shield_6": 0
+    }
+  }
+}

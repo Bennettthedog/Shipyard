@@ -12,8 +12,8 @@
         { "name": "Crew Units", "types": ["External"] },
         { "name": "Admin Shuttles", "types": ["External"] },        
         { "name": "Boarding Parties", "types": ["External"] },
-        { "name": "Probes (Ammo)", "types": ["External"] },
-        { "name": "Probe", "types": [] },
+        { "name": "Probes (Ammo)", "types": ["External"], "Other Names": ["Probes"] },
+        { "name": "Probe", "types": [], "Other Names": ["PRB"] },
         { "name": "Transporter Bombs", "types": ["External"] },
         { "name": "Transporter Dummies", "types": ["External"] },
         { "name": "Nuclear Space Mine", "types": ["External"] },
@@ -21,7 +21,7 @@
         { "name": "Bridge", "types": [] },
         { "name": "Forward Hull", "types": [] },
         { "name": "APR", "types": [] },
-        { "name": "Battery", "types": [] },
+        { "name": "Battery", "types": [], "Other Names": ["BTTY"] },
         { "name": "Cargo", "types": [] },
         { "name": "Transporter", "types": [] },
         { "name": "Impulse", "types": [] },
@@ -84,7 +84,7 @@
         { "name": "Deck Crew", "types": ["External"] },
         { "name": "UIM", "types": ["Hit and Run", "External"] },
         { "name": "Cloak", "types": ["Hit and Run", "External"] },
-        { "name": "Defracs", "types": ["Hit and Run", "External"] }
+        { "name": "Derfacs", "types": ["Hit and Run", "External"] }
       ]
     },
     {
