@@ -20,6 +20,8 @@ let energyTemplate = null
 let weaponDamageCache = null
 let turnMovementTableCache = null
 let externalLabelSetCache = null
+let jsonEditBoxTypeOptionsCache = null
+let jsonEditDatalistCounter = 0
 const VEIL_FOLDER_MARKER = "#"
 const ANALYSIS_EXTERNAL_KEYWORD_MAP = [
   { key: "boarding", terms: ["boarding parties", "boarding party"] },
@@ -2455,16 +2457,52 @@ function renderJsonEditProps(sel) {
     const meta = s.__jsonEdit && typeof s.__jsonEdit === "object" ? s.__jsonEdit : null
     title.textContent = `Box ${s.id}`
     addReadonlyRow(grid, "id", s.id)
-    addReadonlyRow(grid, "label", getSquareDisplayName(s) || "(unlabeled)")
     if (meta?.format === "superluminal") {
+      const updateRawEntry = () => {
+        raw.value = JSON.stringify(getJsonEditSourceEntry(tab, meta) || meta.entry || {}, null, 2)
+      }
+      addReadonlyRow(grid, "label", getSquareDisplayName(s) || "(unlabeled)")
       addReadonlyRow(grid, "source", "Superluminal")
       addReadonlyRow(grid, "ssdKey", meta.ssdKey || "")
       addReadonlyRow(grid, "entryIndex", meta.entryIndex)
+      addEditableJsonEditEntryChoiceRow(
+        grid,
+        tab,
+        s,
+        meta,
+        "type",
+        "type",
+        tab.jsonEditTypeOptions || [],
+        (nextType) => {
+          const clean = normalizeLabel(nextType).clean
+          const fallback = formatJsonEditGroupName(meta.ssdKey)
+          s.label = clean || fallback
+          s.name = clean || fallback
+          renderCanvas()
+          updateRawEntry()
+        }
+      )
+      addEditableJsonEditEntryFieldRow(grid, tab, s, meta, "designation", "designation", updateRawEntry)
+      addEditableJsonEditEntryChoiceRow(
+        grid,
+        tab,
+        s,
+        meta,
+        "arc",
+        "arc",
+        tab.jsonEditArcOptions || [],
+        updateRawEntry
+      )
       addReadonlyRow(grid, "pos", meta.pos || "")
-      raw.value = JSON.stringify(meta.entry || {}, null, 2)
+      updateRawEntry()
       return
     }
     addReadonlyRow(grid, "source", "Veil")
+    addEditableSquareLabelRow(grid, s)
+    addEditableGroupIdRow(grid, tab, s)
+    addReadonlyRow(grid, "sideLengthPx", s.sideLengthPx)
+    addReadonlyRow(grid, "center.x", s.center?.x)
+    addReadonlyRow(grid, "center.y", s.center?.y)
     raw.value = JSON.stringify(s, null, 2)
     return
   }
@@ -3511,6 +3549,120 @@ function addEditableGroupIdRow(grid, tab, square) {
   grid.appendChild(row)
 }
 
+function getJsonEditSourceEntry(tab, meta) {
+  if (!tab || !meta || meta.format !== "superluminal") return null
+  const ssdKey = String(meta.ssdKey || "").trim()
+  const entryIndex = Number(meta.entryIndex)
+  if (!ssdKey || !Number.isInteger(entryIndex) || entryIndex < 0) return null
+
+  const entries = tab.jsonEditSourceDoc?.ssd?.[ssdKey]
+  if (!Array.isArray(entries)) return null
+  const entry = entries[entryIndex]
+  return entry && typeof entry === "object" ? entry : null
+}
+
+function getJsonEditEntryField(tab, meta, fieldName) {
+  const key = String(fieldName || "").trim()
+  if (!key) return ""
+
+  const sourceEntry = getJsonEditSourceEntry(tab, meta)
+  if (sourceEntry && Object.prototype.hasOwnProperty.call(sourceEntry, key)) {
+    return sourceEntry[key]
+  }
+
+  const metaEntry = meta?.entry && typeof meta.entry === "object" ? meta.entry : null
+  return metaEntry && Object.prototype.hasOwnProperty.call(metaEntry, key)
+    ? metaEntry[key]
+    : ""
+}
+
+function setJsonEditEntryField(tab, square, meta, fieldName, value) {
+  const key = String(fieldName || "").trim()
+  if (!key) return
+
+  const next = String(value ?? "")
+  const sourceEntry = getJsonEditSourceEntry(tab, meta)
+  if (sourceEntry) {
+    sourceEntry[key] = next
+  }
+
+  if (meta && typeof meta === "object") {
+    if (!meta.entry || typeof meta.entry !== "object") meta.entry = {}
+    meta.entry[key] = next
+  }
+
+  if (square?.__jsonEdit && typeof square.__jsonEdit === "object") {
+    if (!square.__jsonEdit.entry || typeof square.__jsonEdit.entry !== "object") {
+      square.__jsonEdit.entry = {}
+    }
+    square.__jsonEdit.entry[key] = next
+  }
+}
+
+function addEditableJsonEditEntryFieldRow(grid, tab, square, meta, fieldName, label = fieldName, onAfterInput = null) {
+  const row = document.createElement("div")
+  row.className = "gridRow"
+
+  const k = document.createElement("div")
+  k.className = "gridKey"
+  k.textContent = label
+
+  const v = document.createElement("div")
+  v.className = "gridVal"
+
+  const input = document.createElement("input")
+  input.value = String(getJsonEditEntryField(tab, meta, fieldName) ?? "")
+  input.oninput = () => {
+    setJsonEditEntryField(tab, square, meta, fieldName, input.value)
+    if (typeof onAfterInput === "function") onAfterInput(input.value)
+  }
+
+  v.appendChild(input)
+  row.appendChild(k)
+  row.appendChild(v)
+  grid.appendChild(row)
+}
+
+function addEditableJsonEditEntryChoiceRow(grid, tab, square, meta, fieldName, label = fieldName, options = [], onAfterInput = null) {
+  const row = document.createElement("div")
+  row.className = "gridRow"
+
+  const k = document.createElement("div")
+  k.className = "gridKey"
+  k.textContent = label
+
+  const v = document.createElement("div")
+  v.className = "gridVal"
+
+  const input = document.createElement("input")
+  const listId = `jsonEditChoiceList${++jsonEditDatalistCounter}`
+  input.setAttribute("list", listId)
+  input.value = String(getJsonEditEntryField(tab, meta, fieldName) ?? "")
+
+  const datalist = document.createElement("datalist")
+  datalist.id = listId
+  const seen = new Set()
+  for (const rawOption of Array.isArray(options) ? options : []) {
+    const optionText = String(rawOption || "").trim()
+    if (!optionText || seen.has(optionText.toLowerCase())) continue
+    seen.add(optionText.toLowerCase())
+    const opt = document.createElement("option")
+    opt.value = optionText
+    datalist.appendChild(opt)
+  }
+
+  input.oninput = () => {
+    setJsonEditEntryField(tab, square, meta, fieldName, input.value)
+    if (typeof onAfterInput === "function") onAfterInput(input.value)
+  }
+
+  v.appendChild(input)
+  v.appendChild(datalist)
+  row.appendChild(k)
+  row.appendChild(v)
+  grid.appendChild(row)
+}
+
 /* -----------------------------
    Shipyard panel helpers
 ----------------------------- */
@@ -4410,10 +4562,6 @@ function buildJsonEditDocFromSuperluminal(rawDoc) {
     }
   }
 
-  if (squares.length === 0) {
-    return { ok: false, error: "No Superluminal box positions were found in ssd entries." }
-  }
-
   return {
     ok: true,
     doc: {
@@ -4502,6 +4650,14 @@ async function runJsonEditor() {
   tab.selected = null
   tab.jsonEditFormat = normalized.format
   tab.title = getJsonEditTabTitle(rawDoc, picked.inputBase || picked.jsonFile || "Edit JSON")
+  if (normalized.format === "superluminal") {
+    const [typeOptions, arcOptions] = await Promise.all([
+      readJsonEditBoxTypeOptions(),
+      readArcOptions()
+    ])
+    tab.jsonEditTypeOptions = Array.isArray(typeOptions) ? typeOptions : []
+    tab.jsonEditArcOptions = Array.isArray(arcOptions) ? arcOptions : []
+  }
 
   await ensureTabImageLoaded(tab)
   renderTabs()
@@ -4635,26 +4791,35 @@ function getJsonEditArraySsdKeys(tab) {
   return keys.filter(Boolean)
 }
 
+function isJsonEditWeaponSsdKey(ssdKey) {
+  const key = String(ssdKey || "").trim().toLowerCase()
+  return key === "heavy" || key === "phaser" || key === "drone"
+}
+
 function resolveJsonEditAddBoxSsdKey(tab, options = {}) {
   if (!tab || tab.uiState !== "jsonEdit" || tab.jsonEditFormat !== "superluminal") return ""
   const {
-    allowPrompt = true
+    allowPrompt = true,
+    forcePrompt = false
   } = options
 
   const selectedKey = getSelectedJsonEditSsdKey(tab)
-  if (selectedKey) {
+  if (selectedKey && !forcePrompt) {
     state.jsonEditAddBoxSsdKey = selectedKey
     return selectedKey
   }
 
   const cachedKey = String(state.jsonEditAddBoxSsdKey || "").trim()
-  if (cachedKey) return cachedKey
+  if (cachedKey && !forcePrompt) return cachedKey
 
-  if (!allowPrompt) return ""
+  if (!allowPrompt) return selectedKey || cachedKey || ""
 
   const keys = getJsonEditArraySsdKeys(tab)
-  const defaultKey = keys[0] || ""
-  const entered = prompt("Enter SSD section key for the new box (existing or new):", defaultKey)
+  const defaultKey = selectedKey || cachedKey || keys[0] || ""
+  const entered = prompt(
+    "Enter SSD section key for the new blank box (existing or new):",
+    defaultKey
+  )
   if (entered === null) return ""
   const clean = String(entered || "").trim()
   if (!clean) {
@@ -4722,13 +4887,13 @@ function addJsonEditSquareAtPoint(tab, ix, iy) {
   const y2 = Math.round(iy + half)
   const posText = `${x1},${y1},${x2},${y2}`
 
-  const templateEntry =
-    targetEntries.length > 0 && targetEntries[targetEntries.length - 1] && typeof targetEntries[targetEntries.length - 1] === "object"
-      ? JSON.parse(JSON.stringify(targetEntries[targetEntries.length - 1]))
-      : {}
-  const nextEntry = templateEntry && typeof templateEntry === "object" ? templateEntry : {}
-  nextEntry.pos = posText
-  if ("designation" in nextEntry) nextEntry.designation = ""
+  const nextEntry = { pos: posText }
+  if (isJsonEditWeaponSsdKey(ssdKey)) {
+    nextEntry.type = ""
+    const key = String(ssdKey || "").trim().toLowerCase()
+    if (key === "heavy" || key === "phaser") nextEntry.designation = ""
+    nextEntry.arc = ""
+  }
   const entryIndex = targetEntries.length
   targetEntries.push(nextEntry)
 
@@ -5308,6 +5473,44 @@ async function readArcOptions() {
   const res = await window.api.shipyardReadSectionEntries("Arcs")
   if (!res || !res.ok || !Array.isArray(res.entries)) return null
   return res.entries.map(entry => String(entry || "").trim()).filter(Boolean)
+}
+
+async function readJsonEditBoxTypeOptions() {
+  if (Array.isArray(jsonEditBoxTypeOptionsCache)) return jsonEditBoxTypeOptionsCache
+
+  try {
+    const res = window.api && typeof window.api.shipyardReadSectionEntries === "function"
+      ? await window.api.shipyardReadSectionEntries("Boxes")
+      : null
+    if (res && res.ok && Array.isArray(res.entries)) {
+      jsonEditBoxTypeOptionsCache = res.entries
+        .map(option => String(option || "").trim())
+        .filter(Boolean)
+      return jsonEditBoxTypeOptionsCache
+    }
+  } catch {
+    // Fall back to the legacy label reader below.
+  }
+
+  if (!window.api || typeof window.api.shipyardReadBoxes !== "function") {
+    jsonEditBoxTypeOptionsCache = []
+    return jsonEditBoxTypeOptionsCache
+  }
+
+  try {
+    const res = await window.api.shipyardReadBoxes()
+    if (!res || !res.ok || !Array.isArray(res.options)) {
+      jsonEditBoxTypeOptionsCache = []
+      return jsonEditBoxTypeOptionsCache
+    }
+    jsonEditBoxTypeOptionsCache = res.options
+      .map(option => String(option || "").trim())
+      .filter(Boolean)
+    return jsonEditBoxTypeOptionsCache
+  } catch {
+    jsonEditBoxTypeOptionsCache = []
+    return jsonEditBoxTypeOptionsCache
+  }
 }
 
 async function readWeaponDamageJson() {
@@ -7814,7 +8017,7 @@ function wireEvents() {
     if (state.addSquareMode) {
       setAddGroupMode(false)
       if (tab.jsonEditFormat === "superluminal") {
-        const key = resolveJsonEditAddBoxSsdKey(tab, { allowPrompt: true })
+        const key = resolveJsonEditAddBoxSsdKey(tab, { allowPrompt: true, forcePrompt: true })
         if (!key) {
           setAddSquareMode(false)
           return
