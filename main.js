@@ -626,6 +626,27 @@ async function readDataSectionEntries(sectionLabel) {
     .filter(Boolean)
 }
 
+async function readDataSectionEntryObjects(sectionLabel) {
+  await readDataJson()
+  if (!sectionLabel) return []
+  const key = normalizeLabel(sectionLabel)
+  const items = dataJsonSectionsCache && dataJsonSectionsCache[key]
+  if (!Array.isArray(items)) return []
+  return items
+    .map((entry) => {
+      const name = String(entry?.name || "").trim()
+      const label = String(entry?.label || entry?.name || "").trim()
+      const types = Array.isArray(entry?.types)
+        ? entry.types.map(type => String(type || "").trim()).filter(Boolean)
+        : []
+      const otherNames = Array.isArray(entry?.["Other Names"])
+        ? entry["Other Names"].map(name => String(name || "").trim()).filter(Boolean)
+        : []
+      return { name, label, types, otherNames }
+    })
+    .filter(entry => entry.name.length > 0)
+}
+
 function blankValuesDeep(value) {
   if (Array.isArray(value)) {
     return value.map(item => blankValuesDeep(item))
@@ -1036,6 +1057,11 @@ handleObjectIpc("shipyard:listMissingSuperluminalShips", async () => {
 
 handleObjectIpc("shipyard:readSectionEntries", async (event, sectionLabel) => {
   const entries = await readDataSectionEntries(sectionLabel)
+  return { entries }
+})
+
+handleObjectIpc("shipyard:readSectionEntryObjects", async (event, sectionLabel) => {
+  const entries = await readDataSectionEntryObjects(sectionLabel)
   return { entries }
 })
 

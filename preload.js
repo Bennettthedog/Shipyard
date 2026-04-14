@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld("api", {
     invoke("shipyard:readExistingSuperluminal", inputFolder),
   shipyardReadSectionEntries: (sectionLabel) =>
     invoke("shipyard:readSectionEntries", sectionLabel),
+  shipyardReadSectionEntryObjects: (sectionLabel) =>
+    invoke("shipyard:readSectionEntryObjects", sectionLabel),
   readHeavyList: () => invoke("shipyard:readHeavyList"),
   readExternalList: () => invoke("shipyard:readExternalList"),
   shipyardReadWeaponDamage: () => invoke("shipyard:readWeaponDamage"),
