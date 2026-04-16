@@ -33,6 +33,71 @@ const IMAGE_MIME_BY_EXTENSION = Object.freeze({
   ".tiff": "image/tiff"
 })
 
+function uniquePaths(paths) {
+  return Array.from(new Set(paths.filter(Boolean)))
+}
+
+function getSharedDataCandidatePaths(...segments) {
+  const relativePath = path.join("Data", ...segments)
+  const candidates = []
+  if (process.resourcesPath) {
+    candidates.push(path.join(process.resourcesPath, relativePath))
+  }
+  candidates.push(
+    path.resolve(__dirname, "..", "..", relativePath),
+    path.resolve(process.cwd(), relativePath),
+    path.resolve(process.cwd(), "..", "..", relativePath),
+    path.resolve(app.getAppPath(), "..", "..", relativePath),
+    path.resolve(__dirname, relativePath)
+  )
+  return uniquePaths(candidates)
+}
+
+function getShipyardDataFileCandidatePaths(fileName) {
+  return uniquePaths([
+    ...getSharedDataCandidatePaths("Shipyard", fileName),
+    path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(), fileName),
+    path.join(__dirname, fileName)
+  ])
+}
+
+async function readTextFromCandidatePaths(label, candidatePaths) {
+  const failures = []
+  for (const filePath of candidatePaths) {
+    try {
+      const text = await fs.readFile(filePath, "utf-8")
+      return { filePath, text }
+    } catch (err) {
+      failures.push(`${filePath}: ${err?.message || "failed to read"}`)
+    }
+  }
+  throw new Error(`Failed to load ${label}.\n${failures.join("\n")}`)
+}
+
+async function readJsonFromCandidatePaths(label, candidatePaths) {
+  const { filePath, text } = await readTextFromCandidatePaths(label, candidatePaths)
+  try {
+    return {
+      filePath,
+      data: JSON.parse(text)
+    }
+  } catch {
+    throw new Error(`${label} is not valid JSON.`)
+  }
+}
+
+async function findFirstExistingPath(candidatePaths) {
+  for (const filePath of candidatePaths) {
+    try {
+      await fs.access(filePath)
+      return filePath
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return null
+}
+
 function formatErrorMessage(error, fallback = "Unexpected error.") {
   const msg = error?.message
   if (typeof msg === "string" && msg.trim()) return msg.trim()
@@ -354,24 +419,120 @@ let dataJsonSectionsCache = null
 let weaponDamageCache = null
 let turnMovementCache = null
 
+function parseBoxEntryTypes(typesRaw) {
+  if (Array.isArray(typesRaw)) {
+    return typesRaw.map(type => String(type || "").trim()).filter(Boolean)
+  }
+  return String(typesRaw || "")
+    .split(/[,;\r\n]+/)
+    .map(type => type.trim())
+    .filter(Boolean)
+}
+
+function hasType(types, typeName) {
+  const target = normalizeLabel(typeName)
+  return (Array.isArray(types) ? types : []).some(type => normalizeLabel(type) === target)
+}
+
+function normalizeChartLabelText(raw) {
+  return String(raw || "")
+    .replace(/\\n/g, "\n")
+    .trim()
+}
+
+function getRollsJsonCandidatePaths() {
+  return getSharedDataCandidatePaths("StarHold", "Rolls.json")
+}
+
+async function addBoxEntryToDataAndRolls(payload) {
+  const name = String(payload?.name || "").trim()
+  if (!name) throw new Error("Box name is required.")
+
+  const types = parseBoxEntryTypes(payload?.types)
+  const isExternal = hasType(types, "External")
+  const chartLabel = normalizeChartLabelText(payload?.chartLabel)
+  if (!isExternal && !chartLabel) {
+    throw new Error("Chart label is required unless the box has the External type.")
+  }
+
+  const { filePath: dataPath, data: dataDoc } = await readJsonFromCandidatePaths(
+    "Data.json",
+    getShipyardDataFileCandidatePaths("Data.json")
+  )
+
+  let boxesEntries = null
+  if (Array.isArray(dataDoc)) {
+    boxesEntries = dataDoc
+  } else if (dataDoc && typeof dataDoc === "object" && Array.isArray(dataDoc.sections)) {
+    let boxesSection = dataDoc.sections.find(section => normalizeLabel(section?.label) === "boxes")
+    if (!boxesSection) {
+      boxesSection = { label: "Boxes", entries: [] }
+      dataDoc.sections.unshift(boxesSection)
+    }
+    if (!Array.isArray(boxesSection.entries)) boxesSection.entries = []
+    boxesEntries = boxesSection.entries
+  } else if (dataDoc && typeof dataDoc === "object" && Array.isArray(dataDoc.entries)) {
+    boxesEntries = dataDoc.entries
+  }
+
+  if (!Array.isArray(boxesEntries)) {
+    throw new Error("Data.json must be an array or contain a sections/entries list.")
+  }
+
+  const duplicate = boxesEntries.find(entry => normalizeLabel(entry?.name || entry?.label) === normalizeLabel(name))
+  if (duplicate) throw new Error(`Data.json already has a box named "${name}".`)
+
+  const newEntry = { name, types }
+  boxesEntries.push(newEntry)
+
+  let rollsPath = null
+  let rollsDoc = null
+  let rollsAction = "skipped"
+  if (!isExternal) {
+    const { filePath, data: rollsParsed } = await readJsonFromCandidatePaths(
+      "StarHold Rolls.json",
+      getRollsJsonCandidatePaths()
+    )
+    rollsPath = filePath
+    rollsDoc = rollsParsed
+    if (!rollsDoc || typeof rollsDoc !== "object" || !Array.isArray(rollsDoc.labels)) {
+      throw new Error("Rolls.json must contain a labels array.")
+    }
+
+    const targetKey = normalizeLabel(chartLabel)
+    let labelEntry = rollsDoc.labels.find(entry =>
+      normalizeLabel(entry?.label) === targetKey || normalizeLabel(entry?.chartLabel) === targetKey
+    )
+    if (!labelEntry) {
+      labelEntry = { label: chartLabel, chartLabel, associatedBoxes: [] }
+      rollsDoc.labels.push(labelEntry)
+      rollsAction = "created"
+    } else {
+      rollsAction = "updated"
+    }
+
+    if (!Array.isArray(labelEntry.associatedBoxes)) labelEntry.associatedBoxes = []
+    const hasBox = labelEntry.associatedBoxes.some(box => normalizeLabel(box) === normalizeLabel(name))
+    if (!hasBox) labelEntry.associatedBoxes.push(name)
+  }
+
+  await fs.writeFile(dataPath, JSON.stringify(dataDoc, null, 2), "utf-8")
+  if (!isExternal && rollsDoc) {
+    await fs.writeFile(rollsPath, JSON.stringify(rollsDoc, null, 2), "utf-8")
+  }
+
+  dataJsonCache = null
+  dataJsonSectionsCache = null
+
+  return { name, types, chartLabel, dataPath, rollsPath, rollsAction }
+}
+
 async function readDataJson() {
   if (dataJsonCache) return dataJsonCache
-  const baseDir = app.isPackaged ? process.resourcesPath : app.getAppPath()
-  const targetPath = path.join(baseDir, "Data.json")
-
-  try {
-    await fs.access(targetPath)
-  } catch (err) {
-    throw new Error("Data.json not found.")
-  }
-
-  const raw = await fs.readFile(targetPath, "utf-8")
-  let parsed
-  try {
-    parsed = JSON.parse(raw)
-  } catch (err) {
-    throw new Error("Data.json is not valid JSON.")
-  }
+  const { data: parsed } = await readJsonFromCandidatePaths(
+    "Data.json",
+    getShipyardDataFileCandidatePaths("Data.json")
+  )
 
   let entries = null
   let sectionsMap = null
@@ -544,22 +705,10 @@ function applySuperluminalAutoUpdateFields(doc, options = {}) {
 
 async function readWeaponDamageJson() {
   if (weaponDamageCache) return weaponDamageCache
-  const baseDir = app.isPackaged ? process.resourcesPath : app.getAppPath()
-  const targetPath = path.join(baseDir, "weaponDamage.json")
-
-  try {
-    await fs.access(targetPath)
-  } catch (err) {
-    throw new Error("weaponDamage.json not found.")
-  }
-
-  const raw = await fs.readFile(targetPath, "utf-8")
-  let parsed
-  try {
-    parsed = JSON.parse(raw)
-  } catch (err) {
-    throw new Error("weaponDamage.json is not valid JSON.")
-  }
+  const { data: parsed } = await readJsonFromCandidatePaths(
+    "weaponDamage.json",
+    getShipyardDataFileCandidatePaths("weaponDamage.json")
+  )
 
   if (!parsed || typeof parsed !== "object") {
     throw new Error("weaponDamage.json must be a JSON object.")
@@ -574,22 +723,10 @@ async function readWeaponDamageJson() {
 
 async function readTurnMovementJson() {
   if (turnMovementCache) return turnMovementCache
-  const baseDir = app.isPackaged ? process.resourcesPath : app.getAppPath()
-  const targetPath = path.join(baseDir, "Turn&Movement.json")
-
-  try {
-    await fs.access(targetPath)
-  } catch (err) {
-    throw new Error("Turn&Movement.json not found.")
-  }
-
-  const raw = await fs.readFile(targetPath, "utf-8")
-  let parsed
-  try {
-    parsed = JSON.parse(raw)
-  } catch (err) {
-    throw new Error("Turn&Movement.json is not valid JSON.")
-  }
+  const { data: parsed } = await readJsonFromCandidatePaths(
+    "Turn&Movement.json",
+    getShipyardDataFileCandidatePaths("Turn&Movement.json")
+  )
 
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("Turn&Movement.json must be a JSON object.")
@@ -708,13 +845,7 @@ function cloneTemplateItem(item) {
 }
 
 async function readTemplatePath() {
-  const templatePath = path.join(__dirname, SUPERLUMINAL_CONFIG_FILE)
-  try {
-    await fs.access(templatePath)
-    return templatePath
-  } catch {
-    return null
-  }
+  return findFirstExistingPath(getShipyardDataFileCandidatePaths(SUPERLUMINAL_CONFIG_FILE))
 }
 
 async function readHitAndRunTerms() {
@@ -1063,6 +1194,10 @@ handleObjectIpc("shipyard:readSectionEntries", async (event, sectionLabel) => {
 handleObjectIpc("shipyard:readSectionEntryObjects", async (event, sectionLabel) => {
   const entries = await readDataSectionEntryObjects(sectionLabel)
   return { entries }
+})
+
+handleObjectIpc("shipyard:addBoxEntry", async (event, payload) => {
+  return await addBoxEntryToDataAndRolls(payload)
 })
 
 /* ------------------------------------------

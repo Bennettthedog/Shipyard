@@ -5745,6 +5745,60 @@ async function readJsonEditBoxEntryOptions() {
   return jsonEditBoxEntryOptionsCache
 }
 
+function normalizePromptedTypes(raw) {
+  return String(raw || "")
+    .split(/[,;\r\n]+/)
+    .map(type => type.trim())
+    .filter(Boolean)
+}
+
+async function addBoxEntryToSharedData() {
+  if (!window.api || typeof window.api.shipyardAddBoxEntry !== "function") {
+    alert("Add Box Entry is not available.")
+    return
+  }
+
+  const name = prompt("Box name:")
+  if (name === null) return
+  const cleanName = String(name || "").trim()
+  if (!cleanName) {
+    alert("Box name is required.")
+    return
+  }
+
+  const typesRaw = prompt("Types, separated by commas. Use External for boxes that should not be added to Rolls.json:", "")
+  if (typesRaw === null) return
+  const types = normalizePromptedTypes(typesRaw)
+  const isExternal = types.some(type => type.toLowerCase() === "external")
+
+  let chartLabel = ""
+  if (!isExternal) {
+    const enteredChartLabel = prompt("Associated chart label in Rolls.json:")
+    if (enteredChartLabel === null) return
+    chartLabel = String(enteredChartLabel || "").replace(/\\n/g, "\n").trim()
+    if (!chartLabel) {
+      alert("Chart label is required unless the box has the External type.")
+      return
+    }
+  }
+
+  const res = await window.api.shipyardAddBoxEntry({
+    name: cleanName,
+    types,
+    chartLabel
+  })
+
+  if (!res || !res.ok) {
+    alert(res?.error || "Failed to add box entry.")
+    return
+  }
+
+  jsonEditBoxTypeOptionsCache = null
+  jsonEditBoxEntryOptionsCache = null
+  externalLabelSetCache = null
+  showTempMessage(isExternal ? "Added box entry to Data.json." : "Added box entry to Data.json and Rolls.json.")
+}
+
 async function readJsonEditBoxTypeOptions() {
   if (Array.isArray(jsonEditBoxTypeOptionsCache)) return jsonEditBoxTypeOptionsCache
 
@@ -8248,6 +8302,14 @@ function wireEvents() {
       await runJsonEditor()
     } catch (e) {
       alert(e?.message || "JSON editor failed.")
+    }
+  })
+
+  bindClick("btnAddBoxEntry", async () => {
+    try {
+      await addBoxEntryToSharedData()
+    } catch (e) {
+      alert(e?.message || "Failed to add box entry.")
     }
   })
 

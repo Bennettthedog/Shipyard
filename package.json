@@ -3,13 +3,49 @@
   "version": "1.0.0",
   "description": "Shipyard desktop app",
   "main": "main.js",
+  "private": true,
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "dist": "electron-builder --win nsis"
   },
   "devDependencies": {
-    "electron": "^40.0.0"
+    "electron": "^40.0.0",
+    "electron-builder": "^26.0.12"
   },
   "dependencies": {
     "electron-updater": "^6.6.0"
+  },
+  "build": {
+    "appId": "com.warframecommandmatrix.shipyard",
+    "productName": "Shipyard",
+    "artifactName": "${productName}-Setup-${version}.${ext}",
+    "directories": {
+      "output": "../dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer.js",
+      "index.html",
+      "styles.css",
+      "Shipyard XXVI.py",
+      "ShipyardApp.png"
+    ],
+    "extraResources": [
+      {
+        "from": "../../Data",
+        "to": "Data",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

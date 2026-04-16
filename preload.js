@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld("api", {
     invoke("shipyard:readSectionEntries", sectionLabel),
   shipyardReadSectionEntryObjects: (sectionLabel) =>
     invoke("shipyard:readSectionEntryObjects", sectionLabel),
+  shipyardAddBoxEntry: (payload) => invoke("shipyard:addBoxEntry", payload),
   readHeavyList: () => invoke("shipyard:readHeavyList"),
   readExternalList: () => invoke("shipyard:readExternalList"),
   shipyardReadWeaponDamage: () => invoke("shipyard:readWeaponDamage"),
