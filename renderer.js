@@ -5752,40 +5752,235 @@ function normalizePromptedTypes(raw) {
     .filter(Boolean)
 }
 
+async function readAddBoxEntryTypeOptions() {
+  const entries = await readJsonEditBoxEntryOptions()
+  const types = new Set(["External", "Heavy", "Drone", "Phaser", "Hit and Run"])
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const entryTypes = Array.isArray(entry?.types) ? entry.types : []
+    for (const type of entryTypes) {
+      const clean = String(type || "").trim()
+      if (clean) types.add(clean)
+    }
+  }
+  return Array.from(types).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))
+}
+
+function promptAddBoxEntryDetails(typeOptions) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div")
+    overlay.className = "modalOverlay"
+
+    const card = document.createElement("div")
+    card.className = "modalCard"
+    card.style.width = "440px"
+
+    const title = document.createElement("div")
+    title.className = "modalTitle"
+    title.textContent = "Add Box Entry"
+
+    const desc = document.createElement("div")
+    desc.className = "modalDesc"
+    desc.textContent = "Adds a box to Data.json. Non-External boxes are also added to the matching Rolls.json chart label."
+
+    const makeField = (labelText, placeholder) => {
+      const label = document.createElement("label")
+      label.style.display = "block"
+      label.style.marginBottom = "10px"
+      label.style.color = "var(--muted)"
+      label.style.fontSize = "12px"
+      label.style.textTransform = "uppercase"
+      label.style.letterSpacing = "0.06em"
+
+      const input = document.createElement("input")
+      input.type = "text"
+      input.placeholder = placeholder || ""
+      input.style.width = "100%"
+      input.style.marginTop = "6px"
+      input.style.textTransform = "none"
+      input.style.letterSpacing = "0"
+
+      label.appendChild(document.createTextNode(labelText))
+      label.appendChild(input)
+      return { label, input }
+    }
+
+    const nameField = makeField("Box Name", "Photon Torpedo")
+    const chartField = makeField("Associated Chart Label", "Torp")
+
+    const typesLabel = document.createElement("label")
+    typesLabel.style.display = "block"
+    typesLabel.style.marginBottom = "10px"
+    typesLabel.style.color = "var(--muted)"
+    typesLabel.style.fontSize = "12px"
+    typesLabel.style.textTransform = "uppercase"
+    typesLabel.style.letterSpacing = "0.06em"
+    typesLabel.appendChild(document.createTextNode("Types"))
+
+    const typesSelect = document.createElement("select")
+    typesSelect.multiple = true
+    typesSelect.size = 6
+    typesSelect.style.width = "100%"
+    typesSelect.style.marginTop = "6px"
+    typesSelect.style.textTransform = "none"
+    typesSelect.style.letterSpacing = "0"
+
+    const typeInputRow = document.createElement("div")
+    typeInputRow.style.display = "flex"
+    typeInputRow.style.gap = "8px"
+    typeInputRow.style.marginTop = "8px"
+
+    const customTypeInput = document.createElement("input")
+    customTypeInput.type = "text"
+    customTypeInput.placeholder = "New type"
+    customTypeInput.style.flex = "1"
+    customTypeInput.style.minWidth = "0"
+
+    const btnAddType = document.createElement("button")
+    btnAddType.type = "button"
+    btnAddType.textContent = "Add Type"
+    btnAddType.style.whiteSpace = "nowrap"
+
+    typeInputRow.appendChild(customTypeInput)
+    typeInputRow.appendChild(btnAddType)
+    typesLabel.appendChild(typesSelect)
+    typesLabel.appendChild(typeInputRow)
+
+    const addTypeOption = (rawType, selected = true) => {
+      const clean = String(rawType || "").trim()
+      if (!clean) return null
+      const existing = Array.from(typesSelect.options).find(
+        option => option.value.toLowerCase() === clean.toLowerCase()
+      )
+      if (existing) {
+        existing.selected = selected || existing.selected
+        return existing
+      }
+      const option = document.createElement("option")
+      option.value = clean
+      option.textContent = clean
+      option.selected = selected
+      typesSelect.appendChild(option)
+      return option
+    }
+
+    for (const type of Array.isArray(typeOptions) ? typeOptions : []) {
+      addTypeOption(type, false)
+    }
+
+    const hint = document.createElement("div")
+    hint.className = "modalDesc"
+    hint.style.marginTop = "-4px"
+    hint.textContent = "Select one or more types. Use External to skip Rolls.json."
+
+    const actions = document.createElement("div")
+    actions.className = "modalActions"
+
+    const btnCancel = document.createElement("button")
+    btnCancel.textContent = "Cancel"
+    const btnAdd = document.createElement("button")
+    btnAdd.textContent = "Add"
+
+    actions.appendChild(btnCancel)
+    actions.appendChild(btnAdd)
+
+    card.appendChild(title)
+    card.appendChild(desc)
+    card.appendChild(nameField.label)
+    card.appendChild(typesLabel)
+    card.appendChild(chartField.label)
+    card.appendChild(hint)
+    card.appendChild(actions)
+    overlay.appendChild(card)
+    document.body.appendChild(overlay)
+
+    const syncChartField = () => {
+      const types = Array.from(typesSelect.selectedOptions).map(option => String(option.value || "").trim()).filter(Boolean)
+      const isExternal = types.some(type => type.toLowerCase() === "external")
+      chartField.input.disabled = isExternal
+      chartField.input.placeholder = isExternal ? "Not required for External" : "Torp"
+      chartField.label.style.opacity = isExternal ? "0.55" : "1"
+    }
+
+    const addCustomType = () => {
+      const types = normalizePromptedTypes(customTypeInput.value)
+      if (types.length === 0) {
+        customTypeInput.focus()
+        return
+      }
+      for (const type of types) addTypeOption(type, true)
+      customTypeInput.value = ""
+      syncChartField()
+      typesSelect.focus()
+    }
+
+    function cleanup(value) {
+      window.removeEventListener("keydown", onKey)
+      if (overlay.parentElement) overlay.parentElement.removeChild(overlay)
+      resolve(value)
+    }
+
+    function apply() {
+      const name = String(nameField.input.value || "").trim()
+      const types = Array.from(typesSelect.selectedOptions).map(option => String(option.value || "").trim()).filter(Boolean)
+      const isExternal = types.some(type => type.toLowerCase() === "external")
+      const chartLabel = String(chartField.input.value || "").replace(/\\n/g, "\n").trim()
+
+      if (!name) {
+        showTempMessage("Box name is required.")
+        nameField.input.focus()
+        return
+      }
+      if (!isExternal && !chartLabel) {
+        showTempMessage("Chart label is required unless the type is External.")
+        chartField.input.focus()
+        return
+      }
+
+      cleanup({ name, types, chartLabel })
+    }
+
+    function onKey(e) {
+      if (e.key === "Escape") {
+        cleanup(null)
+        return
+      }
+      if (e.key === "Enter") {
+        if (e.target === customTypeInput) {
+          addCustomType()
+          return
+        }
+        apply()
+      }
+    }
+
+    typesSelect.onchange = syncChartField
+    btnAddType.onclick = () => addCustomType()
+    btnCancel.onclick = () => cleanup(null)
+    btnAdd.onclick = () => apply()
+    window.addEventListener("keydown", onKey)
+
+    syncChartField()
+    nameField.input.focus()
+  })
+}
+
 async function addBoxEntryToSharedData() {
   if (!window.api || typeof window.api.shipyardAddBoxEntry !== "function") {
     alert("Add Box Entry is not available.")
     return
   }
 
-  const name = prompt("Box name:")
-  if (name === null) return
-  const cleanName = String(name || "").trim()
-  if (!cleanName) {
-    alert("Box name is required.")
-    return
-  }
+  const typeOptions = await readAddBoxEntryTypeOptions()
+  const details = await promptAddBoxEntryDetails(typeOptions)
+  if (!details) return
 
-  const typesRaw = prompt("Types, separated by commas. Use External for boxes that should not be added to Rolls.json:", "")
-  if (typesRaw === null) return
-  const types = normalizePromptedTypes(typesRaw)
+  const types = Array.isArray(details.types) ? details.types : []
   const isExternal = types.some(type => type.toLowerCase() === "external")
 
-  let chartLabel = ""
-  if (!isExternal) {
-    const enteredChartLabel = prompt("Associated chart label in Rolls.json:")
-    if (enteredChartLabel === null) return
-    chartLabel = String(enteredChartLabel || "").replace(/\\n/g, "\n").trim()
-    if (!chartLabel) {
-      alert("Chart label is required unless the box has the External type.")
-      return
-    }
-  }
-
   const res = await window.api.shipyardAddBoxEntry({
-    name: cleanName,
+    name: details.name,
     types,
-    chartLabel
+    chartLabel: details.chartLabel
   })
 
   if (!res || !res.ok) {
